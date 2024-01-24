@@ -26,19 +26,19 @@ class SentenceEncoder(BaseEncoder):
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.decoder_tokenizer = decoder_tokenizer
         self.encoder.eval()
-        self.to(device)
+        self.device = device
         self.dbg_counter = 0
 
     def forward(self, x: Tensor) -> ModelOutput:
-        x = torch.squeeze(x)
-        self.encoder = self.encoder.to(x.device)
-        self.linear = self.linear.to(x.device)
+        x = torch.squeeze(x).to(self.device)
+        self.encoder = self.encoder.to(self.device)
+        self.linear = self.linear.to(self.device)
         tok_ids = torch.argmax(x, dim=-1)
         input = self.decoder_tokenizer.batch_decode(tok_ids, clean_up_tokenization_spaces=True, skip_special_tokens=True)
         enc_toks = self.tokenizer(input, padding=True, truncation=True, return_tensors='pt')
-        enc_attn_mask = enc_toks["attention_mask"].to(x.device)
+        enc_attn_mask = enc_toks["attention_mask"].to(self.device)
 
-        encoded = self.encoder(enc_toks["input_ids"].to(x.device), attention_mask=enc_attn_mask)
+        encoded = self.encoder(enc_toks["input_ids"].to(self.device), attention_mask=enc_attn_mask)
         pooled = mean_pooling(encoded, enc_attn_mask)
         mean, logvar = self.linear(pooled).chunk(2, -1)
         output = ModelOutput(
@@ -47,9 +47,10 @@ class SentenceEncoder(BaseEncoder):
         )
 
         # Debug print (inputs)
-        # if (self.dbg_counter % 100 == 0):
-        #     print()
-        #     print("\n".join(input[:2]))
-        # self.dbg_counter += 1
+        if (self.dbg_counter % 100 == 0):
+            print()
+            # print("\n".join(input[:2]))
+            print("\n".join(self.tokenizer.batch_decode(enc_toks["input_ids"])))
+        self.dbg_counter += 1
 
         return output

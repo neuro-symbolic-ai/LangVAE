@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedModel
 from pythae.models.nn import BaseDecoder
 from pythae.models.base.base_utils import ModelOutput
 
@@ -11,66 +11,88 @@ class SentenceDecoder(BaseDecoder):
                  latent_size: int,
                  max_len: int,
                  device: str = "cpu",
+                 load_in_4bit: bool = False,
+                 device_map: str = None,
+                 max_look_behind: int = 20,
                  args=None):  # Args is a ModelConfig instance
         BaseDecoder.__init__(self)
-        self.decoder = AutoModelForCausalLM.from_pretrained(model_path).to(device)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        self.max_len = max_len
-        embedding_dim = self.decoder.get_input_embeddings().embedding_dim
-        # self.context_hidden = nn.Sequential(
-        #     nn.Linear(
-        #         latent_size,
-        #         max_len * embedding_dim * self.decoder.config.n_layer * 2,
-        #         device=device
-        #     ),
-        #     nn.Dropout(p=0.4)
-        # )
-        self.context_embedder = nn.Sequential(
-            nn.Linear(latent_size, latent_size * 2, device=device),
-            nn.Dropout(p=0.4),
-            nn.Linear(latent_size * 2, max_len * embedding_dim, device=device),
-        )
-        self.context_attention = nn.Sequential(
-            nn.Linear(latent_size, latent_size * 2, device=device),
-            nn.Dropout(p=0.4),
-            nn.Linear(latent_size * 2, max_len, device=device)
-            # nn.Linear(latent_size ** 2, max_len * 2, device=device)
+        if (device.startswith("cuda") and device_map):
+            self.decoder = AutoModelForCausalLM.from_pretrained(model_path, load_in_4bit=load_in_4bit, device_map=device_map)
+        else:
+            self.decoder = AutoModelForCausalLM.from_pretrained(model_path, load_in_4bit=load_in_4bit).to(device)
 
+        self.load_in_4bit = load_in_4bit
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path, padding_side="left")
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+        self.max_len = max_len
+        self.max_look_behind = max_look_behind
+        self.device = self.decoder.device
+        embedding_dim = self.decoder.get_input_embeddings().embedding_dim
+
+        dec_ids = torch.unsqueeze(torch.tensor([self.tokenizer.pad_token_id] * 2, dtype=torch.int64, device=self.device), dim=-1)
+        pkv = self.decoder(dec_ids).past_key_values
+        self.pkv_dims =pkv[0][0].shape[1:]
+
+        self.context_embedder = nn.Linear(latent_size, max_len * embedding_dim, device=self.device)
+        self.context_hidden = nn.Linear(
+            latent_size,
+            self.pkv_dims[0] * self.pkv_dims[1] * self.pkv_dims[2] * self.decoder.config.num_hidden_layers * 2,
+            device=self.device
         )
+        self.dropout = nn.Dropout(p=0.2)
 
         self.decoder.eval()
         self.dbg_counter = 0
 
     def forward(self, z: Tensor) -> ModelOutput:
-        # Fix for MPS bug
-        self.decoder = self.decoder.to(z.device)
-        self.context_embedder = self.context_embedder.to(z.device)
-        self.context_attention = self.context_attention.to(z.device)
+        # Fix for pythae device allocation bug
+        if (not self.load_in_4bit):
+            self.decoder = self.decoder.to(self.device)
+        else:
+            self.device = self.decoder.device
+        self.context_hidden = self.context_hidden.to(self.device)
+        self.context_embedder = self.context_embedder.to(self.device)
+        z = z.to(self.device)
 
-        embeds = self.context_embedder(z).view(z.shape[0], self.max_len, self.decoder.get_input_embeddings().embedding_dim)
-        # past = [
-        #     tuple([h.view(-1,
-        #                   self.decoder.config.n_head,
-        #                   self.max_len,
-        #                   self.decoder.get_input_embeddings().embedding_dim // self.decoder.config.n_head)
-        #            for h in v.chunk(2, dim=-1)])
-        #     for v in self.context_hidden(z).chunk(self.decoder.config.n_layer, dim=-1)
-        # ]
-        context_attn = torch.round(F.sigmoid(self.context_attention(z)))
-        decoded = self.decoder(
-            inputs_embeds=embeds,
-            # past_key_values=tuple(past),
-            attention_mask=context_attn
-        )
-        generated = F.softmax(decoded.logits, dim=-1)
+        embedding_dim = self.decoder.get_input_embeddings().embedding_dim
+        # context_embeds = self.dropout(self.context_embedder(z)).view(-1, self.max_len, embedding_dim)
+        past = [
+            tuple([h.view(-1,
+                          self.pkv_dims[0],
+                          self.pkv_dims[1],
+                          self.pkv_dims[2])
+                   for h in v.chunk(2, dim=-1)])
+            for v in self.dropout(self.context_hidden(z)).chunk(self.decoder.config.num_hidden_layers, dim=-1)
+        ]
+
+        generated = torch.zeros(z.shape[0], self.max_len + 1, len(self.tokenizer.get_vocab()), device=self.device)
+        dec_ids = torch.unsqueeze(torch.tensor([self.tokenizer.pad_token_id] * z.shape[0], dtype=torch.int64, device=self.device), dim=-1)
+        decoded = self.decoder(input_ids=dec_ids, past_key_values=tuple(past))
+        generated[:, 0,:] += F.one_hot(dec_ids, num_classes=generated.shape[-1]).squeeze()
+        past_dec = [None] * self.decoder.config.num_hidden_layers
+
+        for i in range(self.max_len):
+            for layer_idx in range(self.decoder.config.num_hidden_layers):
+                past_dec[layer_idx] = (
+                    past[layer_idx][0] + decoded.past_key_values[layer_idx][0][:, :, 1:, :],
+                    past[layer_idx][1] + decoded.past_key_values[layer_idx][1][:, :, 1:, :]
+                )
+
+            decoded = self.decoder(input_ids=generated[:, max(0, i-self.max_look_behind):i+1, :].argmax(dim=-1),
+                                   past_key_values=tuple(past_dec))
+            # decoded = self.decoder(inputs_embeds=context_embeds[:, max(0, i-1):i+1, :],
+            #                        past_key_values=tuple(past_dec))
+            generated[:, i+1,:] = F.softmax(decoded.logits[:, -1, :], dim=-1)
+
+        # generated[:, 0, :] -= F.one_hot(dec_ids, num_classes=generated.shape[-1]).squeeze()
 
         # Debug print (outputs)
-        # if (self.dbg_counter % 100 == 0):
-        #     dec_text = [" ".join(self.tokenizer.convert_ids_to_tokens(batch)) for batch in torch.argmax(generated, dim=-1)]
-        #     print("\n".join(dec_text[:2]))
-        # self.dbg_counter += 1
+        if (self.dbg_counter % 100 == 0):
+            print("\n".join([s.replace("<|endoftext|>", "|#|") for s in self.tokenizer.batch_decode(torch.argmax(generated, dim=-1))]))
+        self.dbg_counter += 1
 
         output = ModelOutput(
-            reconstruction=generated
+            reconstruction=generated[:, 1:,:]
         )
         return output
