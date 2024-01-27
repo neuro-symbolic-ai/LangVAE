@@ -28,11 +28,15 @@ class SentenceEncoder(BaseEncoder):
         self.encoder.eval()
         self.device = device
         self.dbg_counter = 0
+        self.debug = False
 
     def forward(self, x: Tensor) -> ModelOutput:
         x = torch.squeeze(x).to(self.device)
+
+        # Fix for pythae device allocation bug
         self.encoder = self.encoder.to(self.device)
         self.linear = self.linear.to(self.device)
+
         tok_ids = torch.argmax(x, dim=-1)
         input = self.decoder_tokenizer.batch_decode(tok_ids, clean_up_tokenization_spaces=True, skip_special_tokens=True)
         enc_toks = self.tokenizer(input, padding=True, truncation=True, return_tensors='pt')
@@ -47,10 +51,11 @@ class SentenceEncoder(BaseEncoder):
         )
 
         # Debug print (inputs)
-        if (self.dbg_counter % 100 == 0):
-            print()
-            # print("\n".join(input[:2]))
-            print("\n".join(self.tokenizer.batch_decode(enc_toks["input_ids"])))
-        self.dbg_counter += 1
+        if (self.debug):
+            if (self.dbg_counter % 100 == 0):
+                print()
+                # print("\n".join(input[:2]))
+                print("\n".join(self.tokenizer.batch_decode(enc_toks["input_ids"])))
+            self.dbg_counter += 1
 
         return output
