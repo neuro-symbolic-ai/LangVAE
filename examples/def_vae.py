@@ -2,7 +2,7 @@ from pythae.pipelines import TrainingPipeline
 from pythae.models import VAEConfig
 from pythae.trainers import BaseTrainerConfig
 from saf_datasets import CPAEDataSet, WiktionaryDefinitionCorpus
-from langvae.arch.vae import LangVAE
+from langvae import LangVAE
 from langvae.encoders import SentenceEncoder
 from langvae.decoders import SentenceDecoder
 from langvae.data_conversion.tokenization import TokenizedDataSet
@@ -34,8 +34,8 @@ def main():
         output_dir='def_vae',
         num_epochs=10,
         learning_rate=1e-4,
-        per_device_train_batch_size=20,
-        per_device_eval_batch_size=20,
+        per_device_train_batch_size=50,
+        per_device_eval_batch_size=50,
         steps_saving=1,
         optimizer_cls="AdamW",
         # optimizer_params={"weight_decay": 0.05, "betas": (0.91, 0.995)},
