@@ -30,4 +30,14 @@ def vae_nll_loss(recon_x: Tensor,
 
 class LangVAE(VAE):
     def loss_function(self, recon_x, x, mu, log_var, z):
-        return vae_nll_loss(recon_x, x, mu, log_var, z, self.decoder.tokenizer.pad_token_id)
+        losses = vae_nll_loss(recon_x, x, mu, log_var, z, self.decoder.tokenizer.pad_token_id)
+        print("\n", [l.item() for l in losses])
+        return losses
+
+    def encode_z(self, x: Tensor):
+        encoded = self.encoder(x)
+        mu, log_var = encoded["embedding"], encoded["log_covariance"]
+        std = torch.exp(0.5 * log_var)
+        z, eps = self._sample_gauss(mu, std)
+
+        return z
