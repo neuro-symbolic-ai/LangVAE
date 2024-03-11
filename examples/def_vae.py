@@ -1,25 +1,42 @@
-from pythae.pipelines import TrainingPipeline
-from pythae.models import VAEConfig
-from pythae.trainers import BaseTrainerConfig
-from saf_datasets import CPAEDataSet, WiktionaryDefinitionCorpus
+from itertools import chain
+from typing import Union
+
+from pythae.models.vae import VAEConfig
+# from saf_datasets import WordNetFilteredDataSet, WiktionaryDefinitionCorpus
+from saf_datasets import EntailmentBankDataSet
+from saf import Sentence
 from langvae import LangVAE
 from langvae.encoders import SentenceEncoder
 from langvae.decoders import SentenceDecoder
 from langvae.data_conversion.tokenization import TokenizedDataSet
+from langvae.pipelines import LanguageTrainingPipeline
+from langvae.trainers import CyclicalScheduleKLThresholdTrainer, CyclicalScheduleKLThresholdTrainerConfig
 
-DEVICE = "cpu"
+DEVICE = "cuda"
 LATENT_SIZE = 32
 MAX_SENT_LEN = 32
 
+def exclude_sentence(sent: Union[Sentence, str]):
+    sent_str = sent.surface if (isinstance(sent, Sentence)) else sent
+    return sent_str.startswith("plural") or "surname" in sent_str
+
 
 def main():
-    dataset = WiktionaryDefinitionCorpus.from_resource("pos+lemma+ctag+dep+dsr")
+    # dataset1 = WiktionaryDefinitionCorpus.from_resource("pos+lemma+ctag+dep+dsr")
+    # dataset1 = [sent for sent in dataset1 if not exclude_sentence(sent)]
+    # dataset2 = WordNetFilteredDataSet()
+    # eval_size = [int(0.01 * len(ds)) for ds in (dataset1, dataset2)]
+    dataset = [sent.surface for sent in EntailmentBankDataSet()
+               if (sent.annotations["type"] == "answer" or sent.annotations["type"].startswith("context"))]
+    eval_size = int(0.05 * len(dataset))
     decoder = SentenceDecoder("gpt2", LATENT_SIZE, MAX_SENT_LEN, device=DEVICE)
     # decoder = SentenceDecoder("princeton-nlp/Sheared-LLaMA-2.7B", LATENT_SIZE, MAX_SENT_LEN, device=DEVICE,
     #                           load_in_4bit=True, device_map="auto")
     encoder = SentenceEncoder("bert-base-cased", LATENT_SIZE, decoder.tokenizer, device=DEVICE)
-    train_dataset = TokenizedDataSet(dataset[:-1000], decoder.tokenizer, decoder.max_len, device=DEVICE)
-    eval_dataset = TokenizedDataSet(dataset[-1000:], decoder.tokenizer, decoder.max_len, device=DEVICE)
+    # train_dataset = TokenizedDataSet(list(chain(dataset1[:-eval_size[0]], dataset2[:-eval_size[1]])), decoder.tokenizer, decoder.max_len, device=DEVICE)
+    # eval_dataset = TokenizedDataSet(list(chain(dataset1[-eval_size[0]:], dataset2[-eval_size[1]:])), decoder.tokenizer, decoder.max_len, device=DEVICE)
+    train_dataset = TokenizedDataSet(dataset[:-eval_size], decoder.tokenizer, decoder.max_len, device=DEVICE)
+    eval_dataset = TokenizedDataSet(dataset[-eval_size:], decoder.tokenizer, decoder.max_len, device=DEVICE)
 
     encoder.debug = True
     decoder.debug = True
@@ -28,10 +45,15 @@ def main():
         input_dim=(train_dataset[0]["data"].shape[-2], train_dataset[0]["data"].shape[-1]),
         latent_dim=LATENT_SIZE
     )
+    # try:
+    #     print("Loading checkpoint...")
+    #     model = LangVAE.load_from_folder("./checkpoint_7/")
+    # except:
+    print("Training new model...")
     model = LangVAE(model_config, encoder, decoder)
 
-    training_config = BaseTrainerConfig(
-        output_dir='def_vae',
+    training_config = CyclicalScheduleKLThresholdTrainerConfig(
+        output_dir='expl_vae',
         num_epochs=10,
         learning_rate=1e-4,
         per_device_train_batch_size=50,
@@ -40,10 +62,12 @@ def main():
         optimizer_cls="AdamW",
         # optimizer_params={"weight_decay": 0.05, "betas": (0.91, 0.995)},
         scheduler_cls="ReduceLROnPlateau",
-        scheduler_params={"patience": 5, "factor": 0.5}
+        scheduler_params={"patience": 5, "factor": 0.5},
+        max_beta=0.5,
+        target_kl=2.0
     )
 
-    pipeline = TrainingPipeline(
+    pipeline = LanguageTrainingPipeline(
         training_config=training_config,
         model=model
     )
