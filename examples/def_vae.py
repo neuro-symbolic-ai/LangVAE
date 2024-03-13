@@ -54,7 +54,7 @@ def main():
 
     training_config = CyclicalScheduleKLThresholdTrainerConfig(
         output_dir='expl_vae',
-        num_epochs=10,
+        num_epochs=6,
         learning_rate=1e-4,
         per_device_train_batch_size=50,
         per_device_eval_batch_size=50,
@@ -63,7 +63,8 @@ def main():
         # optimizer_params={"weight_decay": 0.05, "betas": (0.91, 0.995)},
         scheduler_cls="ReduceLROnPlateau",
         scheduler_params={"patience": 5, "factor": 0.5},
-        max_beta=0.5,
+        max_beta=1.0,
+        n_cycles=6,
         target_kl=2.0
     )
 

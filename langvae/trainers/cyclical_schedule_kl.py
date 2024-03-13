@@ -1,6 +1,7 @@
 import torch
 from typing import List, Optional
 from torch import Tensor
+from pydantic.dataclasses import dataclass
 from pythae.trainers.base_trainer import BaseTrainer, BaseTrainerConfig
 from pythae.trainers.training_callbacks import TrainingCallback
 from pythae.models.base import BaseAE
@@ -28,9 +29,10 @@ def frange_cycle_zero_linear(n_iter: int,
             i += 1
     return beta_t_list
 
-
+@dataclass
 class CyclicalScheduleKLThresholdTrainerConfig(BaseTrainerConfig):
-    max_beta: float = 0.5
+    max_beta: float = 1.0
+    n_cycles: int = 1
     target_kl: float = 2.0
 
 
@@ -50,8 +52,8 @@ class CyclicalScheduleKLThresholdTrainer(BaseTrainer):
         self.num_batches = len(train_dataset) // training_config.per_device_train_batch_size
         self.num_batches += len(train_dataset) % training_config.per_device_train_batch_size
         n_iter = training_config.num_epochs * self.num_batches
-        self.beta_t_list = frange_cycle_zero_linear(n_iter, start=0.0, stop=training_config.max_beta, n_cycle=1,
-                                                    ratio_increase=0.25, ratio_zero=0.25)
+        self.beta_t_list = frange_cycle_zero_linear(n_iter, start=0.0, stop=training_config.max_beta,
+                                                    n_cycle=training_config.n_cycles, ratio_increase=0.25, ratio_zero=0.25)
         self.model.target_kl = training_config.target_kl
 
     def train_step(self, epoch: int):

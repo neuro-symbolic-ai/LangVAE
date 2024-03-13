@@ -45,7 +45,7 @@ class SentenceDecoder(BaseDecoder):
             dtype=self.pkv_dtype,
             device=self.device
         )
-        self.dropout = nn.Dropout(p=0.2)
+        self.dropout = nn.Dropout(p=0.5)
 
         self.decoder.eval()
         self.dbg_counter = 0
