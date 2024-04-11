@@ -90,6 +90,8 @@ class CyclicalScheduleKLThresholdTrainer(BaseTrainer):
                     uses_ddp=self.distributed,
                 )
 
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+
             self._optimizers_step(model_output)
 
             loss = model_output.loss

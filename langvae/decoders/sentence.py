@@ -25,7 +25,7 @@ class SentenceDecoder(BaseDecoder):
                 self.decoder = self.decoder.to(device)
 
         self.load_in_4bit = load_in_4bit
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, padding_side="left")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path, padding_side="left", add_prefix_space=True)
         self.tokenizer.pad_token = self.tokenizer.eos_token
         self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
         self.max_len = max_len
@@ -45,7 +45,7 @@ class SentenceDecoder(BaseDecoder):
             dtype=self.pkv_dtype,
             device=self.device
         )
-        self.dropout = nn.Dropout(p=0.5)
+        self.dropout = nn.Dropout(p=0.4)
 
         self.decoder.eval()
         self.dbg_counter = 0

@@ -6,13 +6,13 @@ from saf_datasets import WordNetFilteredDataSet, WiktionaryDefinitionCorpus
 from saf_datasets import EntailmentBankDataSet
 from saf import Sentence
 from langvae import LangVAE
-from langvae.encoders import SentenceEncoder
-from langvae.decoders import SentenceDecoder
-from langvae.data_conversion.tokenization import TokenizedDataSet
+from langvae.encoders import AnnotatedSentenceEncoder
+from langvae.decoders import AnnotatedSentenceDecoder
+from langvae.data_conversion.tokenization import TokenizedAnnotatedDataSet
 from langvae.pipelines import LanguageTrainingPipeline
 from langvae.trainers import CyclicalScheduleKLThresholdTrainer, CyclicalScheduleKLThresholdTrainerConfig
 
-DEVICE = "cuda"
+DEVICE = "cpu"
 LATENT_SIZE = 32
 MAX_SENT_LEN = 32
 
@@ -22,36 +22,31 @@ def exclude_sentence(sent: Union[Sentence, str]):
 
 
 def main():
-    dataset1 = WiktionaryDefinitionCorpus.from_resource("pos+lemma+ctag+dep+dsr")
-    dataset1 = [sent for sent in dataset1 if not exclude_sentence(sent)]
-    dataset2 = WordNetFilteredDataSet()
-    dataset3 = [sent for sent in EntailmentBankDataSet()
-               if (sent.annotations["type"] == "answer" or sent.annotations["type"].startswith("context"))]
-    datasets = (dataset1, dataset2, dataset3)
-    # eval_size = int(0.05 * len(dataset))
-    eval_size = [int(0.01 * len(ds)) for ds in datasets]
-    decoder = SentenceDecoder("gpt2", LATENT_SIZE, MAX_SENT_LEN, device=DEVICE)
+    dataset = WiktionaryDefinitionCorpus.from_resource("pos+lemma+ctag+dep+dsr")
+    dataset = [sent for sent in dataset if not exclude_sentence(sent)]
+    eval_size = int(0.05 * len(dataset))
+    decoder = AnnotatedSentenceDecoder("gpt2", LATENT_SIZE, MAX_SENT_LEN, 1, device=DEVICE)
     # decoder = SentenceDecoder("princeton-nlp/Sheared-LLaMA-2.7B", LATENT_SIZE, MAX_SENT_LEN, device=DEVICE,
     #                           load_in_4bit=True, device_map="auto")
-    encoder = SentenceEncoder("bert-base-cased", LATENT_SIZE, decoder.tokenizer, device=DEVICE)
-    train_dataset = TokenizedDataSet(list(chain(*[datasets[i][:-eval_size[i]] for i in range(len(datasets))])), decoder.tokenizer, decoder.max_len, device=DEVICE)
-    eval_dataset = TokenizedDataSet(list(chain(*[datasets[i][-eval_size[i]:] for i in range(len(datasets))])), decoder.tokenizer, decoder.max_len, device=DEVICE)
-    # train_dataset = TokenizedDataSet(dataset[:-eval_size], decoder.tokenizer, decoder.max_len, device=DEVICE)
-    # eval_dataset = TokenizedDataSet(dataset[-eval_size:], decoder.tokenizer, decoder.max_len, device=DEVICE)
+    encoder = AnnotatedSentenceEncoder("bert-base-cased", LATENT_SIZE, decoder.tokenizer, 1, device=DEVICE)
+    train_dataset = TokenizedAnnotatedDataSet(dataset[:-eval_size], decoder.tokenizer, decoder.max_len,
+                                              annotations=["dsr"], device=DEVICE)
+    eval_dataset = TokenizedAnnotatedDataSet(dataset[-eval_size:], decoder.tokenizer, decoder.max_len,
+                                             annotations=["dsr"], device=DEVICE)
 
     encoder.debug = True
     decoder.debug = True
 
     model_config = VAEConfig(
-        input_dim=(train_dataset[0]["data"].shape[-2], train_dataset[0]["data"].shape[-1]),
+        input_dim=(train_dataset[0]["data"].shape[-2], train_dataset[0]["data"].shape[-1] * (1 + len(train_dataset.annotations))),
         latent_dim=LATENT_SIZE
     )
     # try:
-    print("Loading checkpoint...")
-    model = LangVAE.load_from_folder("def_expl_vae/VAE_training_2024-03-18_20-19-52/checkpoint_epoch_4")
+    # print("Loading checkpoint...")
+    # model = LangVAE.load_from_folder("def_expl_vae/VAE_training_2024-03-18_20-19-52/checkpoint_epoch_4")
     # except:
-    #     print("Training new model...")
-    #     model = LangVAE(model_config, encoder, decoder)
+    print("Training new model...")
+    model = LangVAE(model_config, encoder, decoder)
 
     training_config = CyclicalScheduleKLThresholdTrainerConfig(
         output_dir='def_expl_vae',

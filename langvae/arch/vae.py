@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-from typing import Tuple, Optional
+from typing import Tuple, List, Optional
 
 from pythae.trainers import BaseTrainerConfig
 from pythae.models.nn import BaseEncoder, BaseDecoder
@@ -33,6 +33,41 @@ def vae_nll_loss(recon_x: Tensor,
 
     return (recon_loss + KLD).mean(dim=0), recon_loss.mean(dim=0), KLD.mean(dim=0)
 
+@torch.jit.script
+def vae_nll_loss_supervised(recon_x: Tensor,
+                            x: Tensor,
+                            mu: Tensor,
+                            log_var: Tensor,
+                            z: Tensor,
+                            pad_token_id: int,
+                            beta: float,
+                            target_kl: float,
+                            num_annotations: int) -> Tuple[Tensor, Tensor, Tensor]:
+    x = torch.squeeze(x).to(recon_x.device)
+    x_split = x.chunk(num_annotations + 1, dim=-1)
+    recon_x_split = recon_x.chunk(num_annotations + 1, dim=-1)
+    x_tok_ids = torch.argmax(x_split[0], dim=-1)
+    mask = (x_tok_ids != pad_token_id).to(torch.int8)
+    rec_x = recon_x_split[0]
+
+    recon_loss = (F.nll_loss(torch.log(rec_x).view(rec_x.shape[0] * rec_x.shape[1], rec_x.shape[2]),
+                             x_tok_ids.view(rec_x.shape[0] * rec_x.shape[1]),
+                             reduction="none").sum(dim=-1) * mask).sum(dim=-1) / x_split[0].shape[0]
+
+    for lbl_split, rec_lbl in zip(x_split[1:], recon_x_split[1:]):
+        x_lbl_ids = torch.argmax(lbl_split, dim=-1)
+        mask = (x_lbl_ids != pad_token_id).to(torch.int8)
+        recon_loss += (F.nll_loss(torch.log(rec_lbl).view(rec_lbl.shape[0] * rec_lbl.shape[1], rec_lbl.shape[2]),
+                                  x_lbl_ids.view(rec_lbl.shape[0] * rec_lbl.shape[1]),
+                                  reduction="none").sum(dim=-1) * mask).sum(dim=-1) / lbl_split.shape[0]
+
+    KLD = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp(), dim=-1)
+    kl_mask = (KLD > target_kl).float()
+    KLD = beta * (kl_mask * KLD)
+
+
+    return (recon_loss + KLD).mean(dim=0), recon_loss.mean(dim=0), KLD.mean(dim=0)
+
 
 class LangVAE(VAE):
     def __init__(
@@ -45,12 +80,17 @@ class LangVAE(VAE):
         self.cur_beta: float = 0.0
         self.target_kl = 1.0
 
-    def loss_function(self, recon_x, x, mu, log_var, z):
-        losses = vae_nll_loss(recon_x, x, mu, log_var, z, self.decoder.tokenizer.pad_token_id, self.cur_beta, self.target_kl)
+    def loss_function(self, recon_x, x, mu, log_var, z) -> Tuple[Tensor, Tensor, Tensor]:
+        if (recon_x.shape[-1] > self.decoder.decoder.config.vocab_size):
+            num_annotations = recon_x.shape[-1] // self.decoder.decoder.config.vocab_size - 1
+            losses = vae_nll_loss_supervised(recon_x, x, mu, log_var, z, self.decoder.tokenizer.pad_token_id,
+                                             self.cur_beta, self.target_kl, num_annotations)
+        else:
+            losses = vae_nll_loss(recon_x, x, mu, log_var, z, self.decoder.tokenizer.pad_token_id, self.cur_beta, self.target_kl)
         print("\n", [l.item() for l in losses])
         return losses
 
-    def encode_z(self, x: Tensor):
+    def encode_z(self, x: Tensor) -> Tensor:
         encoded = self.encoder(x)
         mu, log_var = encoded["embedding"], encoded["log_covariance"]
         std = torch.exp(0.5 * log_var)
@@ -58,8 +98,16 @@ class LangVAE(VAE):
 
         return z
 
-    def decode_sentences(self, z: Tensor):
+    def decode_sentences(self, z: Tensor) -> List[str]:
         generated = self.decoder(z)["reconstruction"]
         sents = self.decoder.tokenizer.batch_decode(torch.argmax(generated, dim=-1), skip_special_tokens=True)
 
         return sents
+
+    def push_to_hf_hub(self, hf_hub_path: str):
+        self.device = "cpu"
+        self.encoder.device = "cpu"
+        self.decoder.device = "cpu"
+        self.encoder.debug = False
+        self.decoder.debug = False
+        super().push_to_hf_hub(hf_hub_path)
