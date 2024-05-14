@@ -1,4 +1,3 @@
 pythae
 torch
 transformers
-saf @ git+https://github.com/dscarvalho/saf.git

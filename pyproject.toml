@@ -1,0 +1,22 @@
+[project]
+name = "langvae"
+version = "0.2.3"
+authors = [
+  { name="Danilo S. Carvalho", email="danilo.carvalho@manchester.ac.uk" }
+]
+description = "LangVAE: Large Language VAEs made simple"
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
+]
+keywords = ["vae", "llm", "generative", "nlp"]
+dynamic = ["dependencies"]
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[project.urls]
+Homepage = "https://github.com/neuro-symbolic-ai/LangVAE"
+Issues = "https://github.com/neuro-symbolic-ai/LangVAE/issues"

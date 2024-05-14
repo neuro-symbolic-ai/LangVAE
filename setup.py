@@ -16,12 +16,20 @@ def load_requirements() -> list:
 
 setup(
     name='LangVAE',
-    version='0.2.1',
-    packages=['langvae', 'langvae.arch', 'langvae.decoders', 'langvae.encoders', 'langvae.data_conversion'],
+    version='0.2.3',
+    packages=[
+        'langvae',
+        'langvae.arch',
+        'langvae.decoders',
+        'langvae.encoders',
+        'langvae.data_conversion',
+        'langvae.pipelines',
+        'langvae.trainers'
+    ],
     url='',
     license='',
     author='Danilo S. Carvalho',
     author_email='danilo.carvalho@manchester.ac.uk',
-    description='',
+    description='LangVAE: Large Language VAEs made simple',
     install_requires=load_requirements()
 )

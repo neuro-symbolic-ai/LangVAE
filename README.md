@@ -1,6 +1,6 @@
-# LangVAE
+# LangVAE: Large Language VAEs made simple 
 
-LangVAE is a Python library for training and evaluating language models using Variational Autoencoders (VAEs). It provides an easy-to-use interface to train VAEs on text data, allowing users to customize the model architecture, loss function, and training parameters.
+LangVAE is a Python library for training and running language models using Variational Autoencoders (VAEs). It provides an easy-to-use interface to train VAEs on text data, allowing users to customize the model architecture, loss function, and training parameters.
 
 ## Installation
 
@@ -18,30 +18,50 @@ Here's a basic example of how to train a VAE on text data using LangVAE:
 
 ```python
 from langvae import LangVAE
+from langvae.encoders import SentenceEncoder
+from langvae.decoders import SentenceDecoder
+from langvae.data_conversion.tokenization import TokenizedDataSet
+from langvae.pipelines import LanguageTrainingPipeline
+from langvae.trainers import CyclicalScheduleKLThresholdTrainerConfig
+from saf_datasets import EntailmentBankDataSet
 
-# Load pre-trained encoder and decoder models
-encoder = SentenceEncoder("bert-base-cased", LATENT_SIZE, decoder.tokenizer, device=DEVICE)
-decoder = SentenceDecoder("unsloth/llama-3-8b", LATENT_SIZE, MAX_SENT_LEN, device=DEVICE)
+DEVICE = "cuda"
+
+# Load pre-trained sentence encoder and decoder models.
+decoder = SentenceDecoder("gpt2", latent_size=32, max_len=32, device=DEVICE)
+encoder = SentenceEncoder("bert-base-cased", latent_size=32, decoder.tokenizer, device=DEVICE)
+
+# Select explanatory sentences from the EntailmentBank dataset.
+dataset = [
+    sent for sent in EntailmentBankDataSet()
+    if (sent.annotations["type"] == "answer" or 
+        sent.annotations["type"].startswith("context"))
+]
+
+# Set training and evaluation datasets with auto tokenization.
+eval_size = int(0.1 * len(dataset))
+train_dataset = TokenizedDataSet(dataset[:-eval_size], decoder.tokenizer, decoder.max_len)
+eval_dataset = TokenizedDataSet(dataset[-eval_size:], decoder.tokenizer, decoder.max_len)
+
 
 # Define VAE model configuration
 model_config = VAEConfig(
     input_dim=(train_dataset[0]["data"].shape[-2], train_dataset[0]["data"].shape[-1]),
-    latent_dim=LATENT_SIZE
+    latent_dim=32
 )
 
 # Initialize LangVAE model
 model = LangVAE(model_config, encoder, decoder)
 
-# Train VAE on text data
+# Train VAE on explanatory sentences
 training_config = CyclicalScheduleKLThresholdTrainerConfig(
-    output_dir='def_expl_vae',
+    output_dir='expl_vae',
     num_epochs=5,
     learning_rate=1e-4,
     per_device_train_batch_size=50,
     per_device_eval_batch_size=50,
     steps_saving=1,
     optimizer_cls="AdamW",
-    # optimizer_params={"weight_decay": 0.05, "betas": (0.91, 0.995)},
     scheduler_cls="ReduceLROnPlateau",
     scheduler_params={"patience": 5, "factor": 0.5},
     max_beta=1.0,
@@ -62,10 +82,7 @@ pipeline(
 
 This example loads pre-trained encoder and decoder models, defines a VAE model configuration, initializes the LangVAE model, and trains it on text data using a custom training pipeline.
 
-## Contributing
-
-Contributions to LangVAE are welcome! If you have any suggestions or bug reports, please open an issue on GitHub. If you'd like to contribute code, feel free to submit a pull request with your changes.
 
 ## License
 
-LangVAE is licensed under the MIT License. See the LICENSE file for details.
+LangVAE is licensed under the GPLv3 License. See the LICENSE file for details.
