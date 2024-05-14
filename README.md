@@ -17,6 +17,7 @@ This will install all necessary dependencies and set up the package for use in y
 Here's a basic example of how to train a VAE on text data using LangVAE:
 
 ```python
+from pythae.models.vae import VAEConfig
 from langvae import LangVAE
 from langvae.encoders import SentenceEncoder
 from langvae.decoders import SentenceDecoder
@@ -26,10 +27,12 @@ from langvae.trainers import CyclicalScheduleKLThresholdTrainerConfig
 from saf_datasets import EntailmentBankDataSet
 
 DEVICE = "cuda"
+LATENT_SIZE = 32
+MAX_SENT_LEN = 32
 
 # Load pre-trained sentence encoder and decoder models.
-decoder = SentenceDecoder("gpt2", latent_size=32, max_len=32, device=DEVICE)
-encoder = SentenceEncoder("bert-base-cased", latent_size=32, decoder.tokenizer, device=DEVICE)
+decoder = SentenceDecoder("gpt2", LATENT_SIZE, MAX_SENT_LEN, device=DEVICE)
+encoder = SentenceEncoder("bert-base-cased", LATENT_SIZE, decoder.tokenizer, device=DEVICE)
 
 # Select explanatory sentences from the EntailmentBank dataset.
 dataset = [
@@ -47,7 +50,7 @@ eval_dataset = TokenizedDataSet(dataset[-eval_size:], decoder.tokenizer, decoder
 # Define VAE model configuration
 model_config = VAEConfig(
     input_dim=(train_dataset[0]["data"].shape[-2], train_dataset[0]["data"].shape[-1]),
-    latent_dim=32
+    latent_dim=LATENT_SIZE
 )
 
 # Initialize LangVAE model
