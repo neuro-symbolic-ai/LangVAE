@@ -1,6 +1,7 @@
 from itertools import chain
 from typing import Union
 
+import torch.cuda
 from pythae.models.vae import VAEConfig
 from saf_datasets import WordNetFilteredDataSet, WiktionaryDefinitionCorpus
 from saf_datasets import EntailmentBankDataSet
@@ -12,7 +13,7 @@ from langvae.data_conversion.tokenization import TokenizedAnnotatedDataSet
 from langvae.pipelines import LanguageTrainingPipeline
 from langvae.trainers import CyclicalScheduleKLThresholdTrainer, CyclicalScheduleKLThresholdTrainerConfig
 
-DEVICE = "cpu"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 LATENT_SIZE = 32
 MAX_SENT_LEN = 32
 
@@ -49,8 +50,8 @@ def main():
     model = LangVAE(model_config, encoder, decoder)
 
     training_config = CyclicalScheduleKLThresholdTrainerConfig(
-        output_dir='def_expl_vae',
-        num_epochs=4,
+        output_dir='superv_def_vae',
+        num_epochs=6,
         learning_rate=1e-4,
         per_device_train_batch_size=50,
         per_device_eval_batch_size=50,

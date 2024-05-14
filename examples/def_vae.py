@@ -47,15 +47,15 @@ def main():
         latent_dim=LATENT_SIZE
     )
     # try:
-    print("Loading checkpoint...")
-    model = LangVAE.load_from_folder("def_expl_vae/VAE_training_2024-03-18_20-19-52/checkpoint_epoch_4")
+    # print("Loading checkpoint...")
+    # model = LangVAE.load_from_folder("def_expl_vae/VAE_training_2024-03-18_20-19-52/checkpoint_epoch_4")
     # except:
-    #     print("Training new model...")
-    #     model = LangVAE(model_config, encoder, decoder)
+    print("Training new model...")
+    model = LangVAE(model_config, encoder, decoder)
 
     training_config = CyclicalScheduleKLThresholdTrainerConfig(
         output_dir='def_expl_vae',
-        num_epochs=4,
+        num_epochs=5,
         learning_rate=1e-4,
         per_device_train_batch_size=50,
         per_device_eval_batch_size=50,

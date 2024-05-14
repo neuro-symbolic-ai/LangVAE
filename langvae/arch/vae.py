@@ -19,6 +19,25 @@ def vae_nll_loss(recon_x: Tensor,
                  pad_token_id: int,
                  beta: float,
                  target_kl: float) -> Tuple[Tensor, Tensor, Tensor]:
+    """
+        Calculates the negative log-likelihood (NLL) loss for a Variational Autoencoder (VAE).
+
+        Args:
+            recon_x (Tensor): The reconstructed input tensor.
+            x (Tensor): The original input tensor.
+            mu (Tensor): The mean of the latent variable distribution.
+            log_var (Tensor): The logarithm of the variance of the latent variable distribution.
+            z (Tensor): The latent variable tensor.
+            pad_token_id (int): The padding token ID for the input sequence.
+            beta (float): A hyperparameter that controls the trade-off between reconstruction loss and KL divergence.
+            target_kl (float): A target value for the KL divergence (cut-off).
+
+        Returns:
+            Tuple[Tensor, Tensor, Tensor]:
+                - Total NLL loss (reconstruction loss + KL divergence).
+                - Average reconstruction loss.
+                - Average KL divergence.
+        """
     x = torch.squeeze(x).to(recon_x.device)
     x_tok_ids = torch.argmax(x, dim=-1)
     mask = (x_tok_ids != pad_token_id).to(torch.int8)
@@ -70,6 +89,15 @@ def vae_nll_loss_supervised(recon_x: Tensor,
 
 
 class LangVAE(VAE):
+    """
+    A language-oriented Variational Autoencoder (VAE) that can be used for text generation.
+
+    Args:
+        model_config (VAEConfig): The configuration of the VAE model.
+        encoder (Optional[BaseEncoder]): Language encoder model to be used.
+        decoder (Optional[BaseDecoder]): Language decoder model to be used.
+    """
+
     def __init__(
             self,
             model_config: VAEConfig,
@@ -81,16 +109,40 @@ class LangVAE(VAE):
         self.target_kl = 1.0
 
     def loss_function(self, recon_x, x, mu, log_var, z) -> Tuple[Tensor, Tensor, Tensor]:
+        """
+        Computes the loss function for the VAE model.
+
+        Args:
+            recon_x (Tensor): The reconstructed input tensor.
+            x (Tensor): The original input tensor.
+            mu (Tensor): The mean of the latent variable distribution.
+            log_var (Tensor): The logarithm of the variance of the latent variable distribution.
+            z (Tensor): The sampled latent variable tensor.
+
+        Returns:
+            Tuple[Tensor, Tensor, Tensor]: A tuple containing the reconstruction loss, the KL divergence
+                loss, and the total loss.
+        """
         if (recon_x.shape[-1] > self.decoder.decoder.config.vocab_size):
             num_annotations = recon_x.shape[-1] // self.decoder.decoder.config.vocab_size - 1
             losses = vae_nll_loss_supervised(recon_x, x, mu, log_var, z, self.decoder.tokenizer.pad_token_id,
                                              self.cur_beta, self.target_kl, num_annotations)
         else:
-            losses = vae_nll_loss(recon_x, x, mu, log_var, z, self.decoder.tokenizer.pad_token_id, self.cur_beta, self.target_kl)
+            losses = vae_nll_loss(recon_x, x[:,:,:self.decoder.decoder.config.vocab_size], mu, log_var, z,
+                                  self.decoder.tokenizer.pad_token_id, self.cur_beta, self.target_kl)
         print("\n", [l.item() for l in losses])
         return losses
 
     def encode_z(self, x: Tensor) -> Tensor:
+        """
+        Encodes the input tensor into a latent variable tensor.
+
+        Args:
+            x (Tensor): The input tensor to be encoded.
+
+        Returns:
+            Tensor: A tensor containing the sampled latent variables.
+        """
         encoded = self.encoder(x)
         mu, log_var = encoded["embedding"], encoded["log_covariance"]
         std = torch.exp(0.5 * log_var)
@@ -99,12 +151,27 @@ class LangVAE(VAE):
         return z
 
     def decode_sentences(self, z: Tensor) -> List[str]:
+        """
+        Decodes the latent variable tensor into a list of sentences.
+
+        Args:
+            z (Tensor): The latent variable tensor to be decoded.
+
+        Returns:
+            List[str]: A list of strings representing the decoded sentences.
+        """
         generated = self.decoder(z)["reconstruction"]
         sents = self.decoder.tokenizer.batch_decode(torch.argmax(generated, dim=-1), skip_special_tokens=True)
 
         return sents
 
     def push_to_hf_hub(self, hf_hub_path: str):
+        """
+        Uploads the VAE model to the Hugging Face Hub.
+
+        Args:
+            hf_hub_path (str): The HF hub path where the model should be uploaded to.
+        """
         self.device = "cpu"
         self.encoder.device = "cpu"
         self.decoder.device = "cpu"

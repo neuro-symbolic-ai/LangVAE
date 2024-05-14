@@ -10,13 +10,13 @@ class SentenceDecoder(BaseDecoder):
     def __init__(self, model_path: str,
                  latent_size: int,
                  max_len: int,
-                 device: str = "cpu",
+                 device: torch.device = "cpu",
                  load_in_4bit: bool = False,
                  device_map: str = None,
                  max_look_behind: int = 20,
                  args=None):  # Args is a ModelConfig instance
         BaseDecoder.__init__(self)
-        if (device.startswith("cuda") and device_map):
+        if (str(device).startswith("cuda") and device_map):
             self.decoder = AutoModelForCausalLM.from_pretrained(model_path, load_in_4bit=load_in_4bit,
                                                                 torch_dtype="auto", device_map=device_map)
         else:
@@ -29,6 +29,7 @@ class SentenceDecoder(BaseDecoder):
         self.tokenizer.pad_token = self.tokenizer.eos_token
         self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
         self.max_len = max_len
+        self.device_map = device_map
         self.max_look_behind = max_look_behind
         self.device = self.decoder.device
         embedding_dim = self.decoder.get_input_embeddings().embedding_dim
