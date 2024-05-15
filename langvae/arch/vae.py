@@ -1,10 +1,15 @@
+import sys
+import os
+import pickle
 import numpy as np
 import torch
 import torch.nn.functional as F
 from typing import Tuple, List, Optional
+from copy import deepcopy
 
 from pythae.trainers import BaseTrainerConfig
 from pythae.models.nn import BaseEncoder, BaseDecoder
+from pythae.models.base.base_config import BaseAEConfig, EnvironmentConfig
 from torch import Tensor
 from pythae.models.vae import VAE, VAEConfig
 from pythae.trainers.training_callbacks import TrainingCallback
@@ -178,3 +183,42 @@ class LangVAE(VAE):
         self.encoder.debug = False
         self.decoder.debug = False
         super().push_to_hf_hub(hf_hub_path)
+
+    def save(self, dir_path: str):
+        """Method to save the model at a specific location. It saves, the model weights as a
+        ``models.pt`` file along with the model config as a ``model_config.json`` file. If the
+        model to save used custom encoder (resp. decoder) provided by the user, these are also
+        saved as ``decoder.pkl`` (resp. ``decoder.pkl``).
+
+        Args:
+            dir_path (str): The path where the model should be saved. If the path
+                path does not exist a folder will be created at the provided location.
+        """
+
+        env_spec = EnvironmentConfig(
+            python_version=f"{sys.version_info[0]}.{sys.version_info[1]}"
+        )
+        model_dict = {"model_state_dict": deepcopy(self.state_dict())}
+
+        if not os.path.exists(dir_path):
+            try:
+                os.makedirs(dir_path)
+
+            except FileNotFoundError as e:
+                raise e
+
+        env_spec.save_json(dir_path, "environment")
+        self.model_config.save_json(dir_path, "model_config")
+
+        # only save .pkl if custom architecture provided
+        if not self.model_config.uses_default_encoder:
+            with open(os.path.join(dir_path, "encoder.pkl"), "wb") as fp:
+                # cloudpickle.register_pickle_by_value(inspect.getmodule(self.encoder))
+                pickle.dump(self.encoder, fp, pickle.DEFAULT_PROTOCOL)
+
+        if not self.model_config.uses_default_decoder:
+            with open(os.path.join(dir_path, "decoder.pkl"), "wb") as fp:
+                # cloudpickle.register_pickle_by_value(inspect.getmodule(self.decoder))
+                pickle.dump(self.decoder, fp, pickle.DEFAULT_PROTOCOL)
+
+        torch.save(model_dict, os.path.join(dir_path, "model.pt"))

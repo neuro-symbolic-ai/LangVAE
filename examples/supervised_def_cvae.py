@@ -22,15 +22,20 @@ def exclude_sentence(sent: Union[Sentence, str]):
 
 
 def main():
-    dataset = WiktionaryDefinitionCorpus.from_resource("pos+lemma+ctag+dep+dsr")
-    dataset = [sent for sent in dataset if not exclude_sentence(sent)]
+    # dataset = [sent for sent in dataset if not exclude_sentence(sent)]
+    dataset = [sent for sent in EntailmentBankDataSet.from_resource("pos+lemma+ctag+dep+srl#noproof")
+               if (sent.annotations["type"] == "answer" or sent.annotations["type"].startswith("context"))]
+    for sent in dataset:
+        for token in sent.tokens:
+            token.annotations["srl_0"] = token.annotations["srl"][0
+            ]
     eval_size = int(0.05 * len(dataset))
     decoder = SentenceDecoder("gpt2", LATENT_SIZE, MAX_SENT_LEN, device=DEVICE)
     encoder = AnnotatedSentenceEncoder("bert-base-cased", LATENT_SIZE, decoder.tokenizer, 1, device=DEVICE)
     train_dataset = TokenizedAnnotatedDataSet(dataset[:-eval_size], decoder.tokenizer, decoder.max_len,
-                                              annotations=["dsr"], device=DEVICE)
+                                              annotations=["srl_0"], device=DEVICE)
     eval_dataset = TokenizedAnnotatedDataSet(dataset[-eval_size:], decoder.tokenizer, decoder.max_len,
-                                             annotations=["dsr"], device=DEVICE)
+                                             annotations=["srl_0"], device=DEVICE)
 
     encoder.debug = True
     decoder.debug = True
@@ -44,8 +49,8 @@ def main():
     model = LangCVAE(model_config, encoder, decoder)
 
     training_config = CyclicalScheduleKLThresholdTrainerConfig(
-        output_dir='superv_def_cvae',
-        num_epochs=6,
+        output_dir='eb_superv_expl_cvae',
+        num_epochs=10,
         learning_rate=1e-4,
         per_device_train_batch_size=50,
         per_device_eval_batch_size=50,
@@ -55,7 +60,7 @@ def main():
         scheduler_cls="ReduceLROnPlateau",
         scheduler_params={"patience": 5, "factor": 0.5},
         max_beta=1.0,
-        n_cycles=40,
+        n_cycles=8,
         target_kl=2.0
     )
 
@@ -68,6 +73,8 @@ def main():
         train_data=train_dataset,
         eval_data=eval_dataset
     )
+
+    model.push_to_hf_hub("neuro-symbolic-ai/entailbank_langcvae")
 
 
 
