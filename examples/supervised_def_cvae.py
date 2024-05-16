@@ -49,8 +49,8 @@ def main():
     model = LangCVAE(model_config, encoder, decoder)
 
     training_config = CyclicalScheduleKLThresholdTrainerConfig(
-        output_dir='eb_superv_expl_cvae',
-        num_epochs=10,
+        output_dir='eb_superv_expl_cvae_optimus',
+        num_epochs=5,
         learning_rate=1e-4,
         per_device_train_batch_size=50,
         per_device_eval_batch_size=50,
@@ -60,7 +60,7 @@ def main():
         scheduler_cls="ReduceLROnPlateau",
         scheduler_params={"patience": 5, "factor": 0.5},
         max_beta=1.0,
-        n_cycles=8,
+        n_cycles=4,
         target_kl=2.0
     )
 

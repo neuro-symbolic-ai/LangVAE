@@ -7,6 +7,26 @@ from .sentence import SentenceDecoder
 
 
 class AnnotatedSentenceDecoder(SentenceDecoder):
+    """
+    Decoder class for generating sentences from latent representations.
+
+    Extends :class:`~langvae.decoders.SentenceDecoder` to allow generation of token annotations alongside tokens.
+    Annotation tokens are specified by the input data, which should contain mappings (decoder tokens -> labels).
+    It outputs token probability distribution tensors (B x S x A·V), where :math:`B` is the batch size, :math:`S`
+    is the maximum sentence length, :math:`A` is the number of annotations and :math:`V` is the decoder vocabulary size.
+
+    Attributes:
+        model_path (str): Path/locator to the pre-trained language model.
+        latent_size (int): Size of the latent space.
+        num_annotations (int): Number of annotations.
+        max_len (int): Maximum length (in tokens) of the generated sentences.
+        device (torch.device): Device on which the model and data are allocated (e.g., 'cpu', 'cuda').
+        load_in_4bit (bool): Flag indicating whether to load the model in 4-bit quantisation mode for memory efficiency.
+        device_map (str): Device map configuration for model parallelism.
+        max_look_behind (int): Maximum number of tokens to look behind for context in generation.
+        args (ModelConfig, optional): Additional configuration arguments.
+    """
+
     def __init__(self, model_path: str,
                  latent_size: int,
                  max_len: int,
@@ -20,6 +40,18 @@ class AnnotatedSentenceDecoder(SentenceDecoder):
         self.num_annotations = num_annotations
 
     def forward(self, z: Tensor) -> ModelOutput:
+        """
+        Processes the input latent tensor through the decoder to generate sentences.
+
+        Args:
+            z (Tensor): Input tensor containing latent representations.
+
+        Returns:
+            ModelOutput: The generated sentences as a ModelOutput object: token probability distribution
+            tensors (B x S x A·V), where :math:`B` is the batch size, :math:`S` is the maximum sentence length,
+            :math:`A` is the number of annotations and :math:`V` is the decoder vocabulary size.
+        """
+
         # Fix for pythae device allocation bug
         if (not self.load_in_4bit):
             self.decoder = self.decoder.to(self.device)

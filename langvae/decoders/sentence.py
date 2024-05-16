@@ -7,6 +7,24 @@ from pythae.models.base.base_utils import ModelOutput
 
 
 class SentenceDecoder(BaseDecoder):
+    """
+    Decoder class for generating sentences from latent representations.
+
+    This decoder uses a pre-trained causal language model to generate text from latent representations.
+    It outputs token probability distribution tensors (B x S x V), where :math:`B` is the batch size, :math:`S`
+    is the maximum sentence length and :math:`V` is the decoder vocabulary size.
+
+    Attributes:
+        model_path (str): Path/locator to the pre-trained language model.
+        latent_size (int): Size of the latent space.
+        max_len (int): Maximum length (in tokens) of the generated sentences.
+        device (torch.device): Device on which the model and data are allocated (e.g., 'cpu', 'cuda').
+        load_in_4bit (bool): Flag indicating whether to load the model in 4-bit quantisation mode for memory efficiency.
+        device_map (str): Device map configuration for model parallelism.
+        max_look_behind (int): Maximum number of tokens to look behind for context in generation.
+        args (ModelConfig, optional): Additional configuration arguments.
+    """
+
     def __init__(self, model_path: str,
                  latent_size: int,
                  max_len: int,
@@ -24,6 +42,9 @@ class SentenceDecoder(BaseDecoder):
             if (not load_in_4bit):
                 self.decoder = self.decoder.to(device)
 
+        self.decoder.eval()
+        self.decoder.requires_grad_(False)
+
         self.load_in_4bit = load_in_4bit
         self.tokenizer = AutoTokenizer.from_pretrained(model_path, padding_side="left", add_prefix_space=True)
         self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -39,10 +60,15 @@ class SentenceDecoder(BaseDecoder):
         self.pkv_dims = pkv[0][0].shape[1:]
         self.pkv_dtype = pkv[0][0].dtype
 
+        print("pkv_dims:", self.pkv_dims)
+        print("num_hidden_layers:", self.decoder.config.num_hidden_layers)
+        print("hidden_size:", self.decoder.config.hidden_size)
+        print("latent_size:", latent_size)
+
         self.context_embedder = nn.Linear(latent_size, max_len * embedding_dim, dtype=self.pkv_dtype, device=self.device)
         self.context_hidden = nn.Linear(
             latent_size,
-            self.decoder.config.hidden_size * self.decoder.config.num_hidden_layers * 2, # self.pkv_dims[0] * self.pkv_dims[1] * self.pkv_dims[2] == self.decoder.config.hidden_size
+            self.pkv_dims[0] * self.pkv_dims[1] * self.pkv_dims[2] * self.decoder.config.num_hidden_layers * 2, # self.pkv_dims[0] * self.pkv_dims[1] * self.pkv_dims[2] == self.decoder.config.hidden_size
             dtype=self.pkv_dtype,
             device=self.device
         )
@@ -53,6 +79,17 @@ class SentenceDecoder(BaseDecoder):
         self.debug = False
 
     def forward(self, z: Tensor) -> ModelOutput:
+        """
+        Processes the input latent tensor through the decoder to generate sentences.
+
+        Args:
+            z (Tensor): Input tensor containing latent representations.
+
+        Returns:
+            ModelOutput: The generated sentences as a ModelOutput object: token probability distribution
+            tensors (B x S x V), where :math:`B` is the batch size, :math:`S is the maximum sentence length and
+            :math:`V` is the decoder vocabulary size.
+        """
         # Fix for pythae device allocation bug
         if (not self.load_in_4bit):
             self.decoder = self.decoder.to(self.device)

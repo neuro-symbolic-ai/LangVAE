@@ -99,8 +99,8 @@ class LangVAE(VAE):
 
     Args:
         model_config (VAEConfig): The configuration of the VAE model.
-        encoder (Optional[BaseEncoder]): Language encoder model to be used.
-        decoder (Optional[BaseDecoder]): Language decoder model to be used.
+        encoder (Optional[BaseEncoder]): Language encoder model that processes input data and returns sentence embeddings.
+        decoder (Optional[BaseDecoder]): Language decoder model that generates text from latent representations.
     """
 
     def __init__(
