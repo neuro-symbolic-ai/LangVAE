@@ -60,10 +60,10 @@ class SentenceDecoder(BaseDecoder):
         self.pkv_dims = pkv[0][0].shape[1:]
         self.pkv_dtype = pkv[0][0].dtype
 
-        print("pkv_dims:", self.pkv_dims)
-        print("num_hidden_layers:", self.decoder.config.num_hidden_layers)
-        print("hidden_size:", self.decoder.config.hidden_size)
-        print("latent_size:", latent_size)
+        # print("pkv_dims:", self.pkv_dims)
+        # print("num_hidden_layers:", self.decoder.config.num_hidden_layers)
+        # print("hidden_size:", self.decoder.config.hidden_size)
+        # print("latent_size:", latent_size)
 
         self.context_embedder = nn.Linear(latent_size, max_len * embedding_dim, dtype=self.pkv_dtype, device=self.device)
         self.context_hidden = nn.Linear(

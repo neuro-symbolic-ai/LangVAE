@@ -31,7 +31,7 @@ class LangCVAE(LangVAE):
             decoder: Optional[SentenceDecoder]
     ):
         decoder = type(decoder)(decoder.decoder.config.name_or_path,
-                                model_config.latent_dim * 2 * encoder.num_annotations,
+                                encoder.encoder.config.hidden_size * (encoder.num_annotations + 1),
                                 decoder.max_len,
                                 decoder.device,
                                 decoder.load_in_4bit,
@@ -39,7 +39,7 @@ class LangCVAE(LangVAE):
                                 decoder.max_look_behind)
         decoder.debug = True
         super().__init__(model_config=model_config, encoder=encoder, decoder=decoder)
-        self.emb2z = nn.Linear(encoder.encoder.config.hidden_size, model_config.latent_dim, device=self.device)
+        self.z2emb = nn.Linear(model_config.latent_dim, encoder.encoder.config.hidden_size, device=self.device)
 
     def forward(self, inputs: BaseDataset, **kwargs):
         """
@@ -58,7 +58,7 @@ class LangCVAE(LangVAE):
         std = torch.exp(0.5 * log_var)
         z, eps = self._sample_gauss(mu, std)
         cond_vars = encoder_output["embedding_lbls"]
-        recon_x = self.decoder(torch.cat([torch.cat((z, self.emb2z(cvar)), dim=-1) for cvar in cond_vars], dim=-1))["reconstruction"]
+        recon_x = self.decoder(torch.cat([torch.cat((self.z2emb(z), cvar), dim=-1) for cvar in cond_vars], dim=-1))["reconstruction"]
 
         loss, recon_loss, kld = self.loss_function(recon_x, x, mu, log_var, z)
 
@@ -101,7 +101,7 @@ class LangCVAE(LangVAE):
         Returns:
             List[str]: A list of generated sentences.
         """
-        cond_z = torch.cat([torch.cat((z, self.emb2z(cvar)), dim=-1) for cvar in cond_vars], dim=-1)
+        cond_z = torch.cat([torch.cat((self.z2emb(z), cvar), dim=-1) for cvar in cond_vars], dim=-1)
         generated = self.decoder(cond_z)["reconstruction"]
         sents = self.decoder.tokenizer.batch_decode(torch.argmax(generated, dim=-1), skip_special_tokens=True)
 
