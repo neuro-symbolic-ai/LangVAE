@@ -56,9 +56,9 @@ class LangCVAE(LangVAE):
         encoder_output = self.encoder(x)
         mu, log_var = encoder_output.embedding, encoder_output.log_covariance
         std = torch.exp(0.5 * log_var)
-        z, eps = self._sample_gauss(mu, std)
+        z, eps = self._sample_gauss(mu.to(self.device), std.to(self.device))
         cond_vars = encoder_output["embedding_lbls"]
-        recon_x = self.decoder(torch.cat([torch.cat((self.z2emb(z), cvar), dim=-1) for cvar in cond_vars], dim=-1))["reconstruction"]
+        recon_x = self.decoder(torch.cat([torch.cat((self.z2emb(z), cvar.to(self.device)), dim=-1) for cvar in cond_vars], dim=-1))["reconstruction"]
 
         loss, recon_loss, kld = self.loss_function(recon_x, x, mu, log_var, z)
 

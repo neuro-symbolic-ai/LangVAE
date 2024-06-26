@@ -65,7 +65,7 @@ class AnnotatedSentenceEncoder(SentenceEncoder):
         """
 
         # Fix for pythae device allocation bug
-        self.encoder = self.encoder.to(self.device)
+        self._encoder[0] = self._encoder[0].to(self.device)
         self.linear = self.linear.to(self.device)
 
         pooled_annots = list()
@@ -73,16 +73,16 @@ class AnnotatedSentenceEncoder(SentenceEncoder):
         x_tokens = x_split[0]
         tok_ids = torch.argmax(x_tokens, dim=-1)
         input = self.decoder_tokenizer.batch_decode(tok_ids, clean_up_tokenization_spaces=True,
-                                                    skip_special_tokens=True)
+                                                     skip_special_tokens=True)
         enc_toks = self.tokenizer(input, padding=True, truncation=True, return_tensors='pt')
         enc_attn_mask = enc_toks["attention_mask"].to(self.device)
-        encoded = self.encoder(enc_toks["input_ids"].to(self.device), attention_mask=enc_attn_mask)
+        encoded = self.encoder(input_ids=enc_toks["input_ids"].to(self.device), attention_mask=enc_attn_mask)
         pooled = mean_pooling(encoded, enc_attn_mask)
 
         for lbl_split in x_split[1:]:
             lbl_ids = torch.argmax(lbl_split, dim=-1)
             input = self.decoder_tokenizer.batch_decode(lbl_ids, clean_up_tokenization_spaces=True,
-                                                        skip_special_tokens=True)
+                                                         skip_special_tokens=True)
             enc_lbls = self.tokenizer(input, padding=True, truncation=True, return_tensors='pt')
             enc_lbl_attn_mask = enc_lbls["attention_mask"].to(self.device)
             encoded_lbls = self.encoder(enc_lbls["input_ids"].to(self.device), attention_mask=enc_lbl_attn_mask)
@@ -99,10 +99,11 @@ class AnnotatedSentenceEncoder(SentenceEncoder):
 
         # Debug print (inputs)
         if (self.debug):
-            if (self.dbg_counter % 100 == 0):
-                print()
-                # print("\n".join(input[:2]))
-                print("\n".join(self.tokenizer.batch_decode(enc_toks["input_ids"])))
-            self.dbg_counter += 1
+            if (self._dbg_counter % 100 == 0):
+                with open(self.output_log_filepath, "w", encoding="utf-8") as enc_log_file:
+                    # print("\n".join(input[:2]))
+                    print("\n".join(self.tokenizer.batch_decode(enc_toks["input_ids"])), file=enc_log_file)
+                    print("\n", "-" * 40, "\n", file=enc_log_file)
+            self._dbg_counter += 1
 
         return output

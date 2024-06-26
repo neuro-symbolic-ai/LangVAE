@@ -2,17 +2,35 @@ import sys
 import os
 import pickle
 import numpy as np
+import pythae.models.base.base_utils
 import torch
 import torch.nn.functional as F
 from typing import Tuple, List, Optional
 from copy import deepcopy
 
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from pythae.trainers import BaseTrainerConfig
 from pythae.models.nn import BaseEncoder, BaseDecoder
 from pythae.models.base.base_config import BaseAEConfig, EnvironmentConfig
 from torch import Tensor
+from torch.utils.tensorboard import SummaryWriter
 from pythae.models.vae import VAE, VAEConfig
 from pythae.trainers.training_callbacks import TrainingCallback
+
+model_card_template = """---
+language: en
+tags:
+- langvae
+license: apache-2.0
+---
+
+### Downloading this model from the Hub
+This model was trained with {clsname}. It can be downloaded or reloaded using the method `load_from_hf_hub`
+```python
+>>> from langvae import {clsname}
+>>> model = {clsname}.load_from_hf_hub(hf_hub_path="your_hf_username/repo_name")
+```
+"""
 
 
 @torch.jit.script
@@ -46,6 +64,7 @@ def vae_nll_loss(recon_x: Tensor,
     x = torch.squeeze(x).to(recon_x.device)
     x_tok_ids = torch.argmax(x, dim=-1)
     mask = (x_tok_ids != pad_token_id).to(torch.int8)
+    recon_x.clamp_min_(torch.finfo(recon_x.dtype).tiny * 10)  # Prevents underflow
 
     recon_loss = (F.nll_loss(torch.log(recon_x).view(recon_x.shape[0] * recon_x.shape[1], recon_x.shape[2]),
                              x_tok_ids.view(recon_x.shape[0] * recon_x.shape[1]),
@@ -103,6 +122,8 @@ class LangVAE(VAE):
         decoder (Optional[BaseDecoder]): Language decoder model that generates text from latent representations.
     """
 
+    loss_writer = SummaryWriter()
+
     def __init__(
             self,
             model_config: VAEConfig,
@@ -112,6 +133,11 @@ class LangVAE(VAE):
         super().__init__(model_config=model_config, encoder=encoder, decoder=decoder)
         self.cur_beta: float = 0.0
         self.target_kl = 1.0
+
+        # Logging losses
+        self.debug = False
+        self._dbg_counter = 0
+        self._loss_agg = [0.0, 0.0]
 
     def loss_function(self, recon_x, x, mu, log_var, z) -> Tuple[Tensor, Tensor, Tensor]:
         """
@@ -128,6 +154,9 @@ class LangVAE(VAE):
             Tuple[Tensor, Tensor, Tensor]: A tuple containing the reconstruction loss, the KL divergence
                 loss, and the total loss.
         """
+        mu = mu.to(recon_x.device)
+        log_var = log_var.to(recon_x.device)
+
         if (recon_x.shape[-1] > self.decoder.decoder.config.vocab_size):
             num_annotations = recon_x.shape[-1] // self.decoder.decoder.config.vocab_size - 1
             losses = vae_nll_loss_supervised(recon_x, x, mu, log_var, z, self.decoder.tokenizer.pad_token_id,
@@ -135,7 +164,19 @@ class LangVAE(VAE):
         else:
             losses = vae_nll_loss(recon_x, x[:,:,:self.decoder.decoder.config.vocab_size], mu, log_var, z,
                                   self.decoder.tokenizer.pad_token_id, self.cur_beta, self.target_kl)
-        print("\n", [l.item() for l in losses])
+
+        # Log losses with tensorboard.
+        self._loss_agg[0] += losses[0].item()
+        self._loss_agg[1] += losses[2].item()
+        if (self.debug and self._dbg_counter % 10 == 0):
+            # print("\n", [l.item() for l in losses])
+            LangVAE.loss_writer.add_scalar("Loss/train_joint", self._loss_agg[0] / 10, self._dbg_counter // 10)
+            LangVAE.loss_writer.add_scalar("Loss/train_kld", self._loss_agg[1] / 10, self._dbg_counter // 10)
+            LangVAE.loss_writer.flush()
+            self._loss_agg[0] = 0.0
+            self._loss_agg[1] = 0.0
+        self._dbg_counter += 1
+
         return losses
 
     def encode_z(self, x: Tensor) -> Tensor:
@@ -180,8 +221,10 @@ class LangVAE(VAE):
         self.device = "cpu"
         self.encoder.device = "cpu"
         self.decoder.device = "cpu"
+        self.debug = False
         self.encoder.debug = False
         self.decoder.debug = False
+        pythae.models.base.base_utils.model_card_template = model_card_template.format(clsname=self.__class__.__name__)
         super().push_to_hf_hub(hf_hub_path)
 
     def save(self, dir_path: str):
@@ -198,6 +241,12 @@ class LangVAE(VAE):
         env_spec = EnvironmentConfig(
             python_version=f"{sys.version_info[0]}.{sys.version_info[1]}"
         )
+
+        self.cur_beta = 0.0
+        self.debug = False
+        self._dbg_counter = 0
+        self._loss_agg = [0.0, 0.0]
+
         model_dict = {"model_state_dict": deepcopy(self.state_dict())}
 
         if not os.path.exists(dir_path):
@@ -213,12 +262,10 @@ class LangVAE(VAE):
         # only save .pkl if custom architecture provided
         if not self.model_config.uses_default_encoder:
             with open(os.path.join(dir_path, "encoder.pkl"), "wb") as fp:
-                # cloudpickle.register_pickle_by_value(inspect.getmodule(self.encoder))
                 pickle.dump(self.encoder, fp, pickle.DEFAULT_PROTOCOL)
 
         if not self.model_config.uses_default_decoder:
             with open(os.path.join(dir_path, "decoder.pkl"), "wb") as fp:
-                # cloudpickle.register_pickle_by_value(inspect.getmodule(self.decoder))
                 pickle.dump(self.decoder, fp, pickle.DEFAULT_PROTOCOL)
 
         torch.save(model_dict, os.path.join(dir_path, "model.pt"))

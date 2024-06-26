@@ -95,9 +95,9 @@ class AnnotatedSentenceDecoder(SentenceDecoder):
 
         # Debug print (outputs)
         if (self.debug):
-            if (self.dbg_counter % 100 == 0):
+            if (self._dbg_counter % 100 == 0):
                 print("\n".join([s.replace(self.tokenizer.pad_token, "|#|") for s in self.tokenizer.batch_decode(torch.argmax(generated[:,:, :dim_vocab], dim=-1))]))
-            self.dbg_counter += 1
+            self._dbg_counter += 1
 
         output = ModelOutput(
             reconstruction=generated[:, 1:,:]

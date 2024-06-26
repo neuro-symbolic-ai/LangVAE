@@ -1,6 +1,6 @@
 import torch
 from torch import nn, Tensor
-from transformers import AutoTokenizer, AutoModel, PreTrainedTokenizer
+from transformers import AutoTokenizer, AutoModelForTextEncoding, PreTrainedTokenizer
 from pythae.models.nn import BaseEncoder
 from pythae.models.base.base_utils import ModelOutput
 
@@ -54,15 +54,31 @@ class SentenceEncoder(BaseEncoder):
             args (ModelConfig, optional): Additional configuration arguments.
         """
         BaseEncoder.__init__(self)
-        self.encoder = AutoModel.from_pretrained(model_path).to(device)
+        self.model_path = model_path
+        self._encoder = [AutoModelForTextEncoding.from_pretrained(model_path).to(device)]
         self.linear = nn.Linear(self.encoder.config.hidden_size, 2 * latent_size, bias=False, device=device)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        self.decoder_tokenizer = decoder_tokenizer
-        self.encoder.eval()
-        self.encoder.requires_grad_(False)
+        self._tokenizer = [AutoTokenizer.from_pretrained(model_path)]
+        self._decoder_tokenizer = [decoder_tokenizer]
+        self._encoder[0].eval()
+        self._encoder[0].requires_grad_(False)
         self.device = device
-        self.dbg_counter = 0
+
+        # Logging reencoded inputs
+        self._dbg_counter = 0
         self.debug = False
+        self.output_log_filepath = f"langvae_encoder_{model_path.replace('/', '--')}[{latent_size}].txt"
+
+    @property
+    def encoder(self) -> nn.Module:
+        return self._encoder[0]
+
+    @property
+    def tokenizer(self) -> PreTrainedTokenizer:
+        return self._tokenizer[0]
+
+    @property
+    def decoder_tokenizer(self) -> PreTrainedTokenizer:
+        return self._decoder_tokenizer[0]
 
     def forward(self, x: Tensor) -> ModelOutput:
         """
@@ -77,15 +93,15 @@ class SentenceEncoder(BaseEncoder):
         x = torch.squeeze(x).to(self.device)
 
         # Fix for pythae device allocation bug
-        self.encoder = self.encoder.to(self.device)
+        self._encoder[0] = self._encoder[0].to(self.device)
         self.linear = self.linear.to(self.device)
 
         tok_ids = torch.argmax(x, dim=-1)
-        input = self.decoder_tokenizer.batch_decode(tok_ids, clean_up_tokenization_spaces=True, skip_special_tokens=True)
+        input = self.decoder_tokenizer.batch_decode(tok_ids, clean_up_tokenization_spaces=False, skip_special_tokens=True)
         enc_toks = self.tokenizer(input, padding=True, truncation=True, return_tensors='pt')
         enc_attn_mask = enc_toks["attention_mask"].to(self.device)
 
-        encoded = self.encoder(enc_toks["input_ids"].to(self.device), attention_mask=enc_attn_mask)
+        encoded = self.encoder(input_ids=enc_toks["input_ids"].to(self.device), attention_mask=enc_attn_mask)
         pooled = mean_pooling(encoded, enc_attn_mask)
         mean, logvar = self.linear(pooled).chunk(2, -1)
         output = ModelOutput(
@@ -95,10 +111,11 @@ class SentenceEncoder(BaseEncoder):
 
         # Debug print (inputs)
         if (self.debug):
-            if (self.dbg_counter % 100 == 0):
-                print()
-                # print("\n".join(input[:2]))
-                print("\n".join(self.tokenizer.batch_decode(enc_toks["input_ids"])))
-            self.dbg_counter += 1
+            if (self._dbg_counter % 100 == 0):
+                with open(self.output_log_filepath, "w", encoding="utf-8") as enc_log_file:
+                    # print("\n".join(input[:2]))
+                    print("\n".join(self.tokenizer.batch_decode(enc_toks["input_ids"])), file=enc_log_file)
+                    print("\n", "-" * 40, "\n", file=enc_log_file)
+            self._dbg_counter += 1
 
         return output

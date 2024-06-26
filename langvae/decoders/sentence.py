@@ -1,9 +1,14 @@
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
-from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedModel
+from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedTokenizer
 from pythae.models.nn import BaseDecoder
 from pythae.models.base.base_utils import ModelOutput
+
+FLASH_ATTN_SUPPORTED = [
+    "meta-llama/Meta-Llama-3-8B",
+    "mistralai/Mistral-7B-v0.3"
+]
 
 
 class SentenceDecoder(BaseDecoder):
@@ -34,21 +39,26 @@ class SentenceDecoder(BaseDecoder):
                  max_look_behind: int = 20,
                  args=None):  # Args is a ModelConfig instance
         BaseDecoder.__init__(self)
+        self.model_path = model_path
         if (str(device).startswith("cuda") and device_map):
-            self.decoder = AutoModelForCausalLM.from_pretrained(model_path, load_in_4bit=load_in_4bit,
-                                                                torch_dtype="auto", device_map=device_map)
+            self._decoder = [AutoModelForCausalLM.from_pretrained(model_path, load_in_4bit=load_in_4bit,
+                                                                  torch_dtype="auto", device_map=device_map)]
         else:
-            self.decoder = AutoModelForCausalLM.from_pretrained(model_path, load_in_4bit=load_in_4bit, torch_dtype="auto")
+            ex_params = dict()
+            if (model_path in FLASH_ATTN_SUPPORTED):
+                ex_params = {"attn_implementation": "flash_attention_2", "offload_buffers": True}
+            self._decoder = [AutoModelForCausalLM.from_pretrained(model_path, load_in_4bit=load_in_4bit,
+                                                                  torch_dtype="auto", **ex_params)]
             if (not load_in_4bit):
-                self.decoder = self.decoder.to(device)
+                self._decoder = [self.decoder.to(device)]
 
-        self.decoder.eval()
-        self.decoder.requires_grad_(False)
+        self._decoder[0].eval()
+        self._decoder[0].requires_grad_(False)
 
         self.load_in_4bit = load_in_4bit
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, padding_side="left", add_prefix_space=True)
-        self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+        self._tokenizer = [AutoTokenizer.from_pretrained(model_path, padding_side="left", add_prefix_space=True)]
+        self._tokenizer[0].pad_token = self.tokenizer.eos_token
+        self._tokenizer[0].pad_token_id = self.tokenizer.eos_token_id
         self.max_len = max_len
         self.device_map = device_map
         self.max_look_behind = max_look_behind
@@ -74,9 +84,18 @@ class SentenceDecoder(BaseDecoder):
         )
         self.dropout = nn.Dropout(p=0.4)
 
-        self.decoder.eval()
-        self.dbg_counter = 0
+        # Logging outputs
+        self._dbg_counter = 0
         self.debug = False
+        self.output_log_filepath = f"langvae_decoder_{model_path.replace('/', '--')}[{latent_size}_{max_len}].txt"
+
+    @property
+    def decoder(self) -> nn.Module:
+        return self._decoder[0]
+
+    @property
+    def tokenizer(self) -> PreTrainedTokenizer:
+        return self._tokenizer[0]
 
     def forward(self, z: Tensor) -> ModelOutput:
         """
@@ -92,9 +111,9 @@ class SentenceDecoder(BaseDecoder):
         """
         # Fix for pythae device allocation bug
         if (not self.load_in_4bit):
-            self.decoder = self.decoder.to(self.device)
+            self._decoder[0] = self._decoder[0].to(self.device)
         else:
-            self.device = self.decoder.device
+            self.device = self._decoder[0].device
         self.context_hidden = self.context_hidden.to(self.device)
         self.context_embedder = self.context_embedder.to(self.device)
         z = z.to(self.pkv_dtype).to(self.device)
@@ -110,7 +129,7 @@ class SentenceDecoder(BaseDecoder):
             for v in self.dropout(self.context_hidden(z)).chunk(self.decoder.config.num_hidden_layers, dim=-1)
         ]
 
-        generated = torch.zeros(z.shape[0], self.max_len + 1, self.decoder.config.vocab_size, device=self.device)
+        generated = torch.zeros(z.shape[0], self.max_len + 1, self.decoder.config.vocab_size, device=self.device, dtype=self.pkv_dtype)
         dec_ids = torch.unsqueeze(torch.tensor([self.tokenizer.pad_token_id] * z.shape[0], dtype=torch.int64, device=self.device), dim=-1)
         decoded = self.decoder(input_ids=dec_ids, past_key_values=tuple(past))
         generated[:, 0,:] += F.one_hot(dec_ids, num_classes=generated.shape[-1]).squeeze()
@@ -130,12 +149,18 @@ class SentenceDecoder(BaseDecoder):
             decoded = self.decoder(inputs_embeds=embeds, past_key_values=tuple(past_dec))
             generated[:, i+1,:] = F.softmax(decoded.logits[:, -1, :], dim=-1)
 
-
         # Debug print (outputs)
         if (self.debug):
-            if (self.dbg_counter % 100 == 0):
-                print("\n".join([s.replace(self.tokenizer.pad_token, "|#|") for s in self.tokenizer.batch_decode(torch.argmax(generated, dim=-1))]))
-            self.dbg_counter += 1
+            if (self._dbg_counter % 100 == 0):
+                with open(self.output_log_filepath, "w", encoding="utf-8") as output_log_file:
+                    print(
+                        "\n".join([s.replace(self.tokenizer.pad_token, "|#|")
+                                   for s in self.tokenizer.batch_decode(torch.argmax(generated, dim=-1))]),
+                        file=output_log_file
+                    )
+                    print("\n", "-" * 40, "\n", file=output_log_file)
+
+            self._dbg_counter += 1
 
         output = ModelOutput(
             reconstruction=generated[:, 1:,:]

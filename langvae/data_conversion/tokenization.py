@@ -167,6 +167,10 @@ class TokenizedAnnotatedDataSet(TokenizedDataSet):
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
+        # Prefixing with space for word indexing on new tokenizers (Llama3, Gemma, etc.)
+        for i in range(len(sentences)):
+            sentences[i] = [" " + tok for tok in sentences[i]]
+
         tokenized = self.tokenizer(sentences, padding="max_length", truncation=True, max_length=self.max_len,
                                    is_split_into_words=True, return_tensors='pt')
         one_hot = F.one_hot(tokenized["input_ids"], num_classes=len(self.tokenizer.get_vocab())).to(torch.int8)
