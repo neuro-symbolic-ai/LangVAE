@@ -64,7 +64,6 @@ def vae_nll_loss(recon_x: Tensor,
     x = torch.squeeze(x).to(recon_x.device)
     x_tok_ids = torch.argmax(x, dim=-1)
     mask = (x_tok_ids != pad_token_id).to(torch.int8)
-    recon_x.clamp_min_(torch.finfo(recon_x.dtype).tiny * 10)  # Prevents underflow
 
     recon_loss = (F.nll_loss(torch.log(recon_x).view(recon_x.shape[0] * recon_x.shape[1], recon_x.shape[2]),
                              x_tok_ids.view(recon_x.shape[0] * recon_x.shape[1]),
@@ -156,6 +155,7 @@ class LangVAE(VAE):
         """
         mu = mu.to(recon_x.device)
         log_var = log_var.to(recon_x.device)
+        recon_x.clamp_min_(torch.finfo(recon_x.dtype).tiny * 10)  # Prevents underflow
 
         if (recon_x.shape[-1] > self.decoder.decoder.config.vocab_size):
             num_annotations = recon_x.shape[-1] // self.decoder.decoder.config.vocab_size - 1
@@ -261,11 +261,67 @@ class LangVAE(VAE):
 
         # only save .pkl if custom architecture provided
         if not self.model_config.uses_default_encoder:
+            encoder = self.encoder._encoder[0]
+            tokenizer = self.encoder._tokenizer[0]
+            self.encoder._encoder.clear()
+            self.encoder._tokenizer.clear()
             with open(os.path.join(dir_path, "encoder.pkl"), "wb") as fp:
                 pickle.dump(self.encoder, fp, pickle.DEFAULT_PROTOCOL)
+            self.encoder._encoder = [encoder]
+            self.encoder._tokenizer = [tokenizer]
 
         if not self.model_config.uses_default_decoder:
+            decoder = self.decoder._decoder[0]
+            tokenizer = self.decoder._tokenizer[0]
+            self.decoder._decoder.clear()
+            self.decoder._tokenizer.clear()
             with open(os.path.join(dir_path, "decoder.pkl"), "wb") as fp:
                 pickle.dump(self.decoder, fp, pickle.DEFAULT_PROTOCOL)
+            self.decoder._decoder = [decoder]
+            self.decoder._tokenizer = [tokenizer]
 
         torch.save(model_dict, os.path.join(dir_path, "model.pt"))
+
+    @classmethod
+    def _load_custom_encoder_from_folder(cls, dir_path):
+
+        file_list = os.listdir(dir_path)
+        cls._check_python_version_from_folder(dir_path=dir_path)
+
+        if "encoder.pkl" not in file_list:
+            raise FileNotFoundError(
+                f"Missing encoder pkl file ('encoder.pkl') in"
+                f"{dir_path}... This file is needed to rebuild custom encoders."
+                " Cannot perform model building."
+            )
+
+        else:
+            with open(os.path.join(dir_path, "encoder.pkl"), "rb") as fp:
+                encoder = pickle.load(fp)
+
+            if (not encoder._encoder):
+                encoder.init_pretrained_model()
+
+
+        return encoder
+
+    @classmethod
+    def _load_custom_decoder_from_folder(cls, dir_path):
+
+        file_list = os.listdir(dir_path)
+        cls._check_python_version_from_folder(dir_path=dir_path)
+
+        if "decoder.pkl" not in file_list:
+            raise FileNotFoundError(
+                f"Missing decoder pkl file ('decoder.pkl') in"
+                f"{dir_path}... This file is needed to rebuild custom decoders."
+                " Cannot perform model building."
+            )
+
+        else:
+            with open(os.path.join(dir_path, "decoder.pkl"), "rb") as fp:
+                decoder = pickle.load(fp)
+                if (not decoder._decoder):
+                    decoder.init_pretrained_model()
+
+        return decoder

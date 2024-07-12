@@ -55,13 +55,12 @@ class SentenceEncoder(BaseEncoder):
         """
         BaseEncoder.__init__(self)
         self.model_path = model_path
-        self._encoder = [AutoModelForTextEncoding.from_pretrained(model_path).to(device)]
-        self.linear = nn.Linear(self.encoder.config.hidden_size, 2 * latent_size, bias=False, device=device)
-        self._tokenizer = [AutoTokenizer.from_pretrained(model_path)]
-        self._decoder_tokenizer = [decoder_tokenizer]
-        self._encoder[0].eval()
-        self._encoder[0].requires_grad_(False)
         self.device = device
+        self._encoder = []
+        self._tokenizer = []
+        self._decoder_tokenizer = [decoder_tokenizer]
+        self.init_pretrained_model()
+        self.linear = nn.Linear(self.encoder.config.hidden_size, 2 * latent_size, bias=False, device=device)
 
         # Logging reencoded inputs
         self._dbg_counter = 0
@@ -79,6 +78,12 @@ class SentenceEncoder(BaseEncoder):
     @property
     def decoder_tokenizer(self) -> PreTrainedTokenizer:
         return self._decoder_tokenizer[0]
+
+    def init_pretrained_model(self):
+        self._encoder = [AutoModelForTextEncoding.from_pretrained(self.model_path).to(self.device)]
+        self._tokenizer = [AutoTokenizer.from_pretrained(self.model_path)]
+        self._encoder[0].eval()
+        self._encoder[0].requires_grad_(False)
 
     def forward(self, x: Tensor) -> ModelOutput:
         """

@@ -4,8 +4,8 @@ from torch import Tensor
 from pydantic.dataclasses import dataclass
 from pythae.trainers.base_trainer import BaseTrainer, BaseTrainerConfig
 from pythae.trainers.training_callbacks import TrainingCallback
-from pythae.models.base import BaseAE
 from pythae.data.datasets import BaseDataset
+from langvae.arch.vae import LangVAE
 
 
 def frange_cycle_zero_linear(n_iter: int,
@@ -39,7 +39,7 @@ class CyclicalScheduleKLThresholdTrainerConfig(BaseTrainerConfig):
 class CyclicalScheduleKLThresholdTrainer(BaseTrainer):
     def __init__(
             self,
-            model: BaseAE,
+            model: LangVAE,
             train_dataset: BaseDataset,
             eval_dataset: Optional[BaseDataset] = None,
             training_config: Optional[CyclicalScheduleKLThresholdTrainerConfig] = None,
@@ -49,6 +49,7 @@ class CyclicalScheduleKLThresholdTrainer(BaseTrainer):
             training_config = CyclicalScheduleKLThresholdTrainerConfig()
 
         super().__init__(model, train_dataset, eval_dataset, training_config, callbacks)
+
         self.num_batches = len(train_dataset) // training_config.per_device_train_batch_size
         self.num_batches += len(train_dataset) % training_config.per_device_train_batch_size
         n_iter = training_config.num_epochs * self.num_batches
@@ -112,5 +113,71 @@ class CyclicalScheduleKLThresholdTrainer(BaseTrainer):
             self.model.update()
 
         epoch_loss /= len(self.train_loader)
+
+        return epoch_loss
+
+    def eval_step(self, epoch: int):
+        """Perform an evaluation step
+
+        Parameters:
+            epoch (int): The current epoch number
+
+        Returns:
+            (torch.Tensor): The evaluation loss
+        """
+
+        self.callback_handler.on_eval_step_begin(
+            training_config=self.training_config,
+            eval_loader=self.eval_loader,
+            epoch=epoch,
+            rank=self.rank,
+        )
+
+        self.model.eval()
+        cur_beta = self.model.cur_beta
+        self.model.cur_beta = 0.0
+
+        epoch_loss = 0
+
+        with self.amp_context:
+            for inputs in self.eval_loader:
+
+                inputs = self._set_inputs_to_device(inputs)
+
+                try:
+                    with torch.no_grad():
+
+                        model_output = self.model(
+                            inputs,
+                            epoch=epoch,
+                            dataset_size=len(self.eval_loader.dataset),
+                            uses_ddp=self.distributed,
+                        )
+
+                except RuntimeError:
+                    model_output = self.model(
+                        inputs,
+                        epoch=epoch,
+                        dataset_size=len(self.eval_loader.dataset),
+                        uses_ddp=self.distributed,
+                    )
+
+                loss = model_output.loss
+
+                epoch_loss += loss.item()
+
+                if epoch_loss != epoch_loss:
+                    raise ArithmeticError("NaN detected in eval loss")
+
+                self.callback_handler.on_eval_step_end(
+                    training_config=self.training_config
+                )
+
+        epoch_loss /= len(self.eval_loader)
+
+        self.model.cur_beta = cur_beta
+        if (self.model.debug):
+            LangVAE.loss_writer.add_scalar("Loss/eval", epoch_loss, self.model._dbg_counter // 10)
+            LangVAE.loss_writer.flush()
 
         return epoch_loss

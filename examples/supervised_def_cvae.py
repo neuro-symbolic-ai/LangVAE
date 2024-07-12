@@ -66,8 +66,7 @@ def main():
         scheduler_params={"patience": 5, "factor": 0.5},
         max_beta=1.0,
         n_cycles=5,
-        target_kl=2.0,
-        keep_best_on_train=True
+        target_kl=2.0
     )
 
     pipeline = LanguageTrainingPipeline(
