@@ -30,7 +30,7 @@ def main():
     datasets = (dataset1, dataset2, dataset3)
     # eval_size = int(0.05 * len(dataset))
     eval_size = [int(0.01 * len(ds)) for ds in datasets]
-    decoder = SentenceDecoder("gpt2", LATENT_SIZE, MAX_SENT_LEN, device=DEVICE)
+    decoder = SentenceDecoder("gpt2", LATENT_SIZE, MAX_SENT_LEN, device=DEVICE, device_map="auto", max_look_behind=1)
     # decoder = SentenceDecoder("princeton-nlp/Sheared-LLaMA-2.7B", LATENT_SIZE, MAX_SENT_LEN, device=DEVICE,
     #                           load_in_4bit=True, device_map="auto")
     encoder = SentenceEncoder("bert-base-cased", LATENT_SIZE, decoder.tokenizer, device=DEVICE)
@@ -58,16 +58,16 @@ def main():
     training_config = CyclicalScheduleKLThresholdTrainerConfig(
         output_dir='wkt_eb_wn-langvae-bert-gpt2-l64',
         num_epochs=5,
-        learning_rate=1e-4,
-        per_device_train_batch_size=50,
-        per_device_eval_batch_size=50,
+        learning_rate=2e-3,
+        per_device_train_batch_size=500,
+        per_device_eval_batch_size=500,
         steps_saving=1,
         optimizer_cls="AdamW",
         # optimizer_params={"weight_decay": 0.05, "betas": (0.91, 0.995)},
         scheduler_cls="ReduceLROnPlateau",
         scheduler_params={"patience": 5, "factor": 0.5},
         max_beta=1.0,
-        n_cycles=8,
+        n_cycles=4,
         target_kl=2.0
     )
 
