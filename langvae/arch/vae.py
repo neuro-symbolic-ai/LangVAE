@@ -265,20 +265,29 @@ class LangVAE(VAE):
             tokenizer = self.encoder._tokenizer[0]
             self.encoder._encoder.clear()
             self.encoder._tokenizer.clear()
+            enc_device = self.encoder.device
+            self.encoder.to("cpu")
             with open(os.path.join(dir_path, "encoder.pkl"), "wb") as fp:
                 pickle.dump(self.encoder, fp, pickle.DEFAULT_PROTOCOL)
             self.encoder._encoder = [encoder]
             self.encoder._tokenizer = [tokenizer]
+            self.encoder.to(enc_device)
 
         if not self.model_config.uses_default_decoder:
             decoder = self.decoder._decoder[0]
             tokenizer = self.decoder._tokenizer[0]
             self.decoder._decoder.clear()
             self.decoder._tokenizer.clear()
+            dec_device = self.decoder.device
+            dec_dev_map = self.decoder.dec_hidden_layer_dev_map
+            self.decoder.to("cpu")
+            self.decoder.dec_hidden_layer_dev_map = None
             with open(os.path.join(dir_path, "decoder.pkl"), "wb") as fp:
                 pickle.dump(self.decoder, fp, pickle.DEFAULT_PROTOCOL)
             self.decoder._decoder = [decoder]
             self.decoder._tokenizer = [tokenizer]
+            self.decoder.to(dec_device)
+            self.decoder.dec_hidden_layer_dev_map = dec_dev_map
 
         torch.save(model_dict, os.path.join(dir_path, "model.pt"))
 
@@ -325,3 +334,4 @@ class LangVAE(VAE):
                     decoder.init_pretrained_model()
 
         return decoder
+

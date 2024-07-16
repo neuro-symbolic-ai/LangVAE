@@ -84,6 +84,12 @@ class SentenceDecoder(BaseDecoder):
     def tokenizer(self) -> PreTrainedTokenizer:
         return self._tokenizer[0]
 
+    def to(self, device):
+        super().to(device)
+        self.device = device
+        self.decoder.to(device)
+        self.dec_hidden_layer_dev_map = None
+
     def init_pretrained_model(self):
         ex_params = dict()
         if (self.model_path in FLASH_ATTN_SUPPORTED):
