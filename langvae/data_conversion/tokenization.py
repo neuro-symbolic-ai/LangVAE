@@ -3,6 +3,7 @@ import torch.nn.functional as F
 from typing import Tuple, List, Union, Iterable
 from string import ascii_letters
 from itertools import combinations
+from hashlib import sha256
 from torch.utils.data import Dataset
 from pythae.data.datasets import DatasetOutput
 from transformers import PreTrainedTokenizer
@@ -26,6 +27,7 @@ class TokenizedDataSet(Dataset):
     def __init__(self, source: Union[Iterable[Sentence], List[str]],
                  tokenizer: PreTrainedTokenizer,
                  max_len: int,
+                 caching: bool = False,
                  device: str = "cpu"):
         """
         Initializes the TokenizedDataSet with the given source data, tokenizer, maximum sequence length, and device.
@@ -39,7 +41,9 @@ class TokenizedDataSet(Dataset):
         self.source = source
         self.tokenizer = tokenizer
         self.max_len = max_len
+        self.caching = caching
         self.device = device
+        self.cache = dict()
 
     def __len__(self):
         """
@@ -74,8 +78,21 @@ class TokenizedDataSet(Dataset):
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
-        tokenized = self.tokenizer(sentences, padding="max_length", truncation=True, max_length=self.max_len, return_tensors='pt')
-        one_hot = F.one_hot(tokenized["input_ids"], num_classes=len(self.tokenizer.get_vocab())).to(torch.int8)
+        one_hot = None
+        if (self.caching):
+            try:
+                cached = [self.cache[sha256(sent.encode("utf8"), usedforsecurity=False).digest()]
+                          for sent in sentences]
+                one_hot = torch.stack(cached).to_dense()
+            except KeyError:
+                pass
+
+        if (one_hot is None):
+            tokenized = self.tokenizer(sentences, padding="max_length", truncation=True, max_length=self.max_len, return_tensors='pt')
+            one_hot = F.one_hot(tokenized["input_ids"], num_classes=len(self.tokenizer.get_vocab())).to(torch.int8)
+            if (self.caching):
+                for i in range(len(sentences)):
+                    self.cache[sha256(sentences[i].encode("utf8"), usedforsecurity=False).digest()] = one_hot[i].to_sparse()
 
         return DatasetOutput(data=one_hot.to(self.device))
 
