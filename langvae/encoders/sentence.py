@@ -79,10 +79,11 @@ class SentenceEncoder(BaseEncoder):
     def decoder_tokenizer(self) -> PreTrainedTokenizer:
         return self._decoder_tokenizer[0]
 
-    def to(self, device):
+    def to(self, device, include_pretrained: bool = True):
         super().to(device)
         self.device = device
-        self.encoder.to(device)
+        if (self._encoder and include_pretrained):
+            self._encoder[0].to(device)
 
     def init_pretrained_model(self):
         self._encoder = [AutoModelForTextEncoding.from_pretrained(self.model_path).to(self.device)]

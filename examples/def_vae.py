@@ -13,7 +13,7 @@ from langvae.pipelines import LanguageTrainingPipeline
 from langvae.trainers import CyclicalScheduleKLThresholdTrainer, CyclicalScheduleKLThresholdTrainerConfig
 
 DEVICE = "cuda"
-LATENT_SIZE = 64
+LATENT_SIZE = 128
 MAX_SENT_LEN = 32
 
 def exclude_sentence(sent: Union[Sentence, str]):
@@ -56,9 +56,9 @@ def main():
     model.debug = True
 
     training_config = CyclicalScheduleKLThresholdTrainerConfig(
-        output_dir='wkt_eb_wn-langvae-bert-gpt2-l64',
+        output_dir='wkt_eb_wn-langvae-bert-gpt2-l128',
         num_epochs=5,
-        learning_rate=2e-3,
+        learning_rate=4e-3,
         per_device_train_batch_size=500,
         per_device_eval_batch_size=500,
         steps_saving=1,
@@ -82,7 +82,7 @@ def main():
     )
 
     LangCVAE.loss_writer.close()
-    model.push_to_hf_hub("neuro-symbolic-ai/wkt_eb_wn-langvae-bert-gpt2-l64")
+    model.push_to_hf_hub("neuro-symbolic-ai/wkt_eb_wn-langvae-bert-gpt2-l128")
 
 
 

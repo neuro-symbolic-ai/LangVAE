@@ -63,7 +63,7 @@ class SentenceDecoder(BaseDecoder):
         self.context_hidden = nn.ModuleList([
             nn.Linear(
                 latent_size,
-                self.pkv_dims[0] * self.pkv_dims[1] * self.pkv_dims[2] * 4, # self.pkv_dims[0] * self.pkv_dims[1] * self.pkv_dims[2] == self.decoder.config.hidden_size
+                self.pkv_dims[0] * self.pkv_dims[1] * self.pkv_dims[2] * 2, # self.pkv_dims[0] * self.pkv_dims[1] * self.pkv_dims[2] == self.decoder.config.hidden_size
                 dtype=self.pkv_dtype,
                 device=f"cuda:{self.dec_hidden_layer_dev_map[i]}" if self.dec_hidden_layer_dev_map else self.device
             )
@@ -84,11 +84,13 @@ class SentenceDecoder(BaseDecoder):
     def tokenizer(self) -> PreTrainedTokenizer:
         return self._tokenizer[0]
 
-    def to(self, device):
+    def to(self, device, include_pretrained: bool = True):
         super().to(device)
         self.device = device
-        self.decoder.to(device)
         self.dec_hidden_layer_dev_map = None
+        if (self._decoder and include_pretrained):
+            self._decoder[0].to(device)
+
 
     def init_pretrained_model(self):
         ex_params = dict()
@@ -151,29 +153,28 @@ class SentenceDecoder(BaseDecoder):
                           self.pkv_dims[0],
                           self.pkv_dims[1],
                           self.pkv_dims[2]).to(f"cuda:{dev_map[l_idx]}" if dev_map else self.device)
-                   for h in self.dropout(self.context_hidden[l_idx](z)).chunk(4, dim=-1)])
+                   for h in self.dropout(self.context_hidden[l_idx](z)).chunk(2, dim=-1)])
             for l_idx in range(len(self.context_hidden))
         ]
-        init_past = tuple([(F.tanh(p[0]) + p[1], F.tanh(p[2]) + p[3]) for p in past])
 
         generated = torch.zeros(z.shape[0], self.max_len + 1, self.decoder.config.vocab_size, device=self.device, dtype=self.pkv_dtype)
         dec_ids = torch.unsqueeze(torch.tensor([self.tokenizer.pad_token_id] * z.shape[0], dtype=torch.int64, device=self.device), dim=-1)
-        decoded = self.decoder(input_ids=dec_ids, past_key_values=init_past)
+        decoded = self.decoder(input_ids=dec_ids, past_key_values=past)
         generated[:, 0,:] += F.one_hot(dec_ids, num_classes=generated.shape[-1]).squeeze()
         past_dec = [None] * self.decoder.config.num_hidden_layers
 
         for i in range(self.max_len):
             for layer_idx in range(self.decoder.config.num_hidden_layers):
                 past_dec[layer_idx] = (
-                    F.tanh(past[layer_idx][0]) * decoded.past_key_values[layer_idx][0][:, :, 1:, :] + past[layer_idx][1],
-                    F.tanh(past[layer_idx][2]) * decoded.past_key_values[layer_idx][1][:, :, 1:, :] + past[layer_idx][3]
+                    torch.cat([past[layer_idx][0], decoded.past_key_values[layer_idx][0][:, :, 1:, :]], dim=-2),
+                    torch.cat([past[layer_idx][1], decoded.past_key_values[layer_idx][1][:, :, 1:, :]], dim=-2),
                 )
 
             # decoded = self.decoder(input_ids=generated[:, max(0, i-self.max_look_behind):i+1, :].argmax(dim=-1),
             #                        past_key_values=tuple(past_dec))
             gen_ids = generated[:, max(0, i-self.max_look_behind):i+1, :].argmax(dim=-1)
             embeds = self.decoder.get_input_embeddings()(gen_ids) + context_embeds[:, max(0, i-self.max_look_behind):i+1, :]
-            decoded = self.decoder(inputs_embeds=embeds, past_key_values=tuple(past_dec))
+            decoded = self.decoder(inputs_embeds=embeds, past_key_values=past_dec)
             generated[:, i+1,:] = F.softmax(decoded.logits[:, -1, :], dim=-1)
 
         # Debug print (outputs)

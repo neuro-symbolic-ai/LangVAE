@@ -280,13 +280,13 @@ class LangVAE(VAE):
             self.decoder._tokenizer.clear()
             dec_device = self.decoder.device
             dec_dev_map = self.decoder.dec_hidden_layer_dev_map
-            self.decoder.to("cpu")
+            self.decoder.to("cpu", False)
             self.decoder.dec_hidden_layer_dev_map = None
             with open(os.path.join(dir_path, "decoder.pkl"), "wb") as fp:
                 pickle.dump(self.decoder, fp, pickle.DEFAULT_PROTOCOL)
             self.decoder._decoder = [decoder]
             self.decoder._tokenizer = [tokenizer]
-            self.decoder.to(dec_device)
+            self.decoder.to(dec_device, False)
             self.decoder.dec_hidden_layer_dev_map = dec_dev_map
 
         torch.save(model_dict, os.path.join(dir_path, "model.pt"))
