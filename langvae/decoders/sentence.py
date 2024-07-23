@@ -136,11 +136,6 @@ class SentenceDecoder(BaseDecoder):
             self._decoder[0] = self._decoder[0].to(self.device)
         else:
             self.device = self._decoder[0].device
-            # if (self.dec_hidden_layer_dev_map):
-            #     for i in self.dec_hidden_layer_dev_map:
-            #         self.context_hidden[i].to(f"cuda:{self.dec_hidden_layer_dev_map[i]}")
-            # else:
-            #     self.context_hidden = self.context_hidden.to(self.device)
             self.context_embedder = self.context_embedder.to(self.device)
 
         z = z.to(self.pkv_dtype).to(self.device)
@@ -170,8 +165,6 @@ class SentenceDecoder(BaseDecoder):
                     torch.cat([past[layer_idx][1], decoded.past_key_values[layer_idx][1][:, :, 1:, :]], dim=-2),
                 )
 
-            # decoded = self.decoder(input_ids=generated[:, max(0, i-self.max_look_behind):i+1, :].argmax(dim=-1),
-            #                        past_key_values=tuple(past_dec))
             gen_ids = generated[:, max(0, i-self.max_look_behind):i+1, :].argmax(dim=-1)
             embeds = self.decoder.get_input_embeddings()(gen_ids) + context_embeds[:, max(0, i-self.max_look_behind):i+1, :]
             decoded = self.decoder(inputs_embeds=embeds, past_key_values=past_dec)

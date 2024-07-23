@@ -267,11 +267,17 @@ class LangVAE(VAE):
             self.encoder._tokenizer.clear()
             enc_device = self.encoder.device
             self.encoder.to("cpu")
+            enc_caching = self.encoder.caching
+            enc_input_cache = self.encoder.cache
+            self.encoder.caching = False
+            self.encoder.cache = dict()
             with open(os.path.join(dir_path, "encoder.pkl"), "wb") as fp:
                 pickle.dump(self.encoder, fp, pickle.DEFAULT_PROTOCOL)
             self.encoder._encoder = [encoder]
             self.encoder._tokenizer = [tokenizer]
             self.encoder.to(enc_device)
+            self.encoder.cache = enc_input_cache
+            self.encoder.caching = enc_caching
 
         if not self.model_config.uses_default_decoder:
             decoder = self.decoder._decoder[0]

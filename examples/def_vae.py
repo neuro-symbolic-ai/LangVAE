@@ -1,6 +1,7 @@
 from itertools import chain
 from typing import Union
 
+from tqdm import tqdm
 from pythae.models.vae import VAEConfig
 from saf_datasets import WordNetFilteredDataSet, WiktionaryDefinitionCorpus
 from saf_datasets import EntailmentBankDataSet
@@ -13,7 +14,7 @@ from langvae.pipelines import LanguageTrainingPipeline
 from langvae.trainers import CyclicalScheduleKLThresholdTrainer, CyclicalScheduleKLThresholdTrainerConfig
 
 DEVICE = "cuda"
-LATENT_SIZE = 128
+LATENT_SIZE = 256
 MAX_SENT_LEN = 32
 
 def exclude_sentence(sent: Union[Sentence, str]):
@@ -33,11 +34,24 @@ def main():
     decoder = SentenceDecoder("gpt2", LATENT_SIZE, MAX_SENT_LEN, device=DEVICE, device_map="auto", max_look_behind=1)
     # decoder = SentenceDecoder("princeton-nlp/Sheared-LLaMA-2.7B", LATENT_SIZE, MAX_SENT_LEN, device=DEVICE,
     #                           load_in_4bit=True, device_map="auto")
-    encoder = SentenceEncoder("bert-base-cased", LATENT_SIZE, decoder.tokenizer, device=DEVICE)
-    train_dataset = TokenizedDataSet(list(chain(*[datasets[i][:-eval_size[i]] for i in range(len(datasets))])), decoder.tokenizer, decoder.max_len, device=DEVICE)
-    eval_dataset = TokenizedDataSet(list(chain(*[datasets[i][-eval_size[i]:] for i in range(len(datasets))])), decoder.tokenizer, decoder.max_len, device=DEVICE)
+    encoder = SentenceEncoder("bert-base-cased", LATENT_SIZE, decoder.tokenizer, caching=True, device=DEVICE)
+    train_dataset = TokenizedDataSet(list(chain(*[datasets[i][:-eval_size[i]] for i in range(len(datasets))])),
+                                     decoder.tokenizer, decoder.max_len, caching=True,
+                                     cache_persistence="wkt_wn_eb_train_tok-gpt2_cache.jsonl", device=DEVICE)
+    eval_dataset = TokenizedDataSet(list(chain(*[datasets[i][-eval_size[i]:] for i in range(len(datasets))])),
+                                    decoder.tokenizer, decoder.max_len, caching=True,
+                                    cache_persistence="wkt_wn_eb_eval_tok-gpt2_cache.jsonl", device=DEVICE)
     # train_dataset = TokenizedDataSet(dataset[:-eval_size], decoder.tokenizer, decoder.max_len, device=DEVICE)
     # eval_dataset = TokenizedDataSet(dataset[-eval_size:], decoder.tokenizer, decoder.max_len, device=DEVICE)
+
+    # batch_size = 1000
+    # for i in tqdm(range(0, len(train_dataset), batch_size), desc="Caching train"):
+    #     read = train_dataset[i: i + batch_size]
+    #
+    # for i in tqdm(range(0, len(eval_dataset), batch_size), desc="Caching eval"):
+    #     read = eval_dataset[i: i + batch_size]
+    #
+    # exit(0)
 
     encoder.debug = True
     decoder.debug = True
@@ -56,18 +70,18 @@ def main():
     model.debug = True
 
     training_config = CyclicalScheduleKLThresholdTrainerConfig(
-        output_dir='wkt_eb_wn-langvae-bert-gpt2-l128',
-        num_epochs=5,
-        learning_rate=4e-3,
-        per_device_train_batch_size=500,
-        per_device_eval_batch_size=500,
+        output_dir='wkt_eb_wn-langvae-bert-gpt2-l256',
+        num_epochs=20,
+        learning_rate=5e-3,
+        per_device_train_batch_size=200,
+        per_device_eval_batch_size=200,
         steps_saving=1,
         optimizer_cls="AdamW",
         # optimizer_params={"weight_decay": 0.05, "betas": (0.91, 0.995)},
         scheduler_cls="ReduceLROnPlateau",
         scheduler_params={"patience": 5, "factor": 0.5},
         max_beta=1.0,
-        n_cycles=4,
+        n_cycles=8,
         target_kl=2.0
     )
 
@@ -81,8 +95,8 @@ def main():
         eval_data=eval_dataset
     )
 
-    LangCVAE.loss_writer.close()
-    model.push_to_hf_hub("neuro-symbolic-ai/wkt_eb_wn-langvae-bert-gpt2-l128")
+    LangVAE.loss_writer.close()
+    model.push_to_hf_hub("neuro-symbolic-ai/wkt_eb_wn-langvae-bert-gpt2-l256")
 
 
 

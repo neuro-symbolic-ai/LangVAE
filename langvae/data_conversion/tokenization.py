@@ -1,13 +1,20 @@
+import json
 import torch
 import torch.nn.functional as F
+import jsonlines
 from typing import Tuple, List, Union, Iterable
 from string import ascii_letters
 from itertools import combinations
-from hashlib import sha256
+from xxhash import xxh128_digest
+from tqdm import tqdm
 from torch.utils.data import Dataset
 from pythae.data.datasets import DatasetOutput
 from transformers import PreTrainedTokenizer
 from saf import Sentence
+
+
+def get_hash(value: str) -> bytes:
+    return xxh128_digest(value.encode("utf8"), seed=0)
 
 
 class TokenizedDataSet(Dataset):
@@ -28,6 +35,7 @@ class TokenizedDataSet(Dataset):
                  tokenizer: PreTrainedTokenizer,
                  max_len: int,
                  caching: bool = False,
+                 cache_persistence: str = None,
                  device: str = "cpu"):
         """
         Initializes the TokenizedDataSet with the given source data, tokenizer, maximum sequence length, and device.
@@ -36,6 +44,8 @@ class TokenizedDataSet(Dataset):
             source (Union[Iterable[Sentence], List[str]]): The source data containing sentences or strings.
             tokenizer (PreTrainedTokenizer): The tokenizer to be used for tokenization.
             max_len (int): The maximum length of the tokenized output.
+            caching (bool): Activate caching of the tokenized inputs to accelerate reads.
+            cache_persistence (str): File path for persisting cached inputs, if caching is activated.
             device (str): The device to which tensors will be sent. Defaults to "cpu".
         """
         self.source = source
@@ -44,6 +54,22 @@ class TokenizedDataSet(Dataset):
         self.caching = caching
         self.device = device
         self.cache = dict()
+        self.cache_persistence = cache_persistence
+        self.vocab_size = len(self.tokenizer.get_vocab())
+
+        if (caching and cache_persistence):
+            try:
+                with jsonlines.open(cache_persistence) as cache_reader:
+                    for entry in tqdm(cache_reader, desc=f"Loading dataset cache at {cache_persistence}"):
+                        key = bytes.fromhex(entry["key"])
+                        value = json.loads(entry["value"])
+                        indices = list(range(max_len))
+                        self.cache[key] = torch.sparse_coo_tensor([indices, value["ids"]],
+                                                                  [1] * len(indices),
+                                                                  (max_len, self.vocab_size),
+                                                                  dtype=torch.int8)
+            except IOError:
+                pass
 
     def __len__(self):
         """
@@ -79,22 +105,34 @@ class TokenizedDataSet(Dataset):
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
         one_hot = None
+        keys = None
         if (self.caching):
+            keys = [get_hash(sent) for sent in sentences]
             try:
-                cached = [self.cache[sha256(sent.encode("utf8"), usedforsecurity=False).digest()]
-                          for sent in sentences]
-                one_hot = torch.stack(cached).to_dense()
+                cached = [self.cache[key] for key in keys]
+                one_hot = torch.stack(cached)
             except KeyError:
                 pass
 
         if (one_hot is None):
             tokenized = self.tokenizer(sentences, padding="max_length", truncation=True, max_length=self.max_len, return_tensors='pt')
-            one_hot = F.one_hot(tokenized["input_ids"], num_classes=len(self.tokenizer.get_vocab())).to(torch.int8)
+            one_hot = torch.stack([
+                torch.sparse_coo_tensor([list(range(self.max_len)), tokenized["input_ids"][i]],
+                                        [1] * self.max_len, (self.max_len, self.vocab_size), dtype=torch.int8)
+                for i in range(len(tokenized["input_ids"]))
+            ])
+
             if (self.caching):
                 for i in range(len(sentences)):
-                    self.cache[sha256(sentences[i].encode("utf8"), usedforsecurity=False).digest()] = one_hot[i].to_sparse()
+                    if (keys[i] not in self.cache):
+                        self.cache[keys[i]] = one_hot[i].coalesce()
+                        if (self.cache_persistence):
+                            value = {"ids": self.cache[keys[i]].indices()[1].tolist()}
+                            with jsonlines.open(self.cache_persistence, mode='a') as cache_writer:
+                                cache_writer.write({"key": keys[i].hex(), "value": json.dumps(value)})
 
-        return DatasetOutput(data=one_hot.to(self.device))
+        return DatasetOutput(data=one_hot.to(self.device).to_dense())
+
 
 class TokenizedAnnotatedDataSet(TokenizedDataSet):
     """

@@ -1,4 +1,6 @@
 pythae
 torch
 transformers
+jsonlines
+xxhash
 saf-nlp

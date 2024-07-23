@@ -1,5 +1,6 @@
 import torch
 from torch import nn, Tensor
+from xxhash import xxh128_digest
 from transformers import AutoTokenizer, AutoModelForTextEncoding, PreTrainedTokenizer
 from pythae.models.nn import BaseEncoder
 from pythae.models.base.base_utils import ModelOutput
@@ -41,6 +42,7 @@ class SentenceEncoder(BaseEncoder):
     def __init__(self, model_path: str,
                  latent_size: int,
                  decoder_tokenizer: PreTrainedTokenizer,
+                 caching: bool = False,
                  device: str = "cpu",
                  args=None):  # Args is a ModelConfig instance
         """
@@ -50,6 +52,7 @@ class SentenceEncoder(BaseEncoder):
             model_path (str): Path/locator to the pre-trained model.
             latent_size (int): Size of the latent space.
             decoder_tokenizer (PreTrainedTokenizer): Tokenizer for decoding input tensors.
+            caching (bool): Activate caching of the pooled pretrained encodings to accelerate processing.
             device (str): Device to allocate model and data (e.g., 'cpu', 'cuda').
             args (ModelConfig, optional): Additional configuration arguments.
         """
@@ -61,6 +64,8 @@ class SentenceEncoder(BaseEncoder):
         self._decoder_tokenizer = [decoder_tokenizer]
         self.init_pretrained_model()
         self.linear = nn.Linear(self.encoder.config.hidden_size, 2 * latent_size, bias=False, device=device)
+        self.caching = caching
+        self.cache = dict()
 
         # Logging reencoded inputs
         self._dbg_counter = 0
@@ -91,6 +96,36 @@ class SentenceEncoder(BaseEncoder):
         self._encoder[0].eval()
         self._encoder[0].requires_grad_(False)
 
+    def recode(self, tok_ids: Tensor) -> Tensor:
+        pooled = None
+        if (self.caching):
+            try:
+                pooled_cache = list()
+                for i in range(len(tok_ids)):
+                    cache_key = xxh128_digest(tok_ids[i].cpu().numpy().data.tobytes(), seed=0)
+                    pooled_cache.append(self.cache[cache_key])
+
+                pooled = torch.stack(pooled_cache).to(self.device)
+            except KeyError:
+                pass
+
+        if (pooled is None):
+            input = self.decoder_tokenizer.batch_decode(tok_ids, clean_up_tokenization_spaces=False,
+                                                        skip_special_tokens=True)
+            enc_toks = self.tokenizer(input, padding=True, truncation=True, return_tensors='pt')
+            enc_attn_mask = enc_toks["attention_mask"].to(self.device)
+            enc_toks_ids = enc_toks["input_ids"].to(self.device)
+            encoded = self.encoder(input_ids=enc_toks_ids, attention_mask=enc_attn_mask)
+            pooled = mean_pooling(encoded, enc_attn_mask).detach()
+
+            if (self.caching):
+                for i in range(len(tok_ids)):
+                    cache_key = xxh128_digest(tok_ids[i].cpu().numpy().data.tobytes(), seed=0)
+                    if (cache_key not in self.cache):
+                        self.cache[cache_key] = pooled[i]
+
+        return pooled
+
     def forward(self, x: Tensor) -> ModelOutput:
         """
         Processes the input tensor through the encoder and linear transformation to produce latent variables.
@@ -108,12 +143,7 @@ class SentenceEncoder(BaseEncoder):
         self.linear = self.linear.to(self.device)
 
         tok_ids = torch.argmax(x, dim=-1)
-        input = self.decoder_tokenizer.batch_decode(tok_ids, clean_up_tokenization_spaces=False, skip_special_tokens=True)
-        enc_toks = self.tokenizer(input, padding=True, truncation=True, return_tensors='pt')
-        enc_attn_mask = enc_toks["attention_mask"].to(self.device)
-
-        encoded = self.encoder(input_ids=enc_toks["input_ids"].to(self.device), attention_mask=enc_attn_mask)
-        pooled = mean_pooling(encoded, enc_attn_mask)
+        pooled = self.recode(tok_ids)
         mean, logvar = self.linear(pooled).chunk(2, -1)
         output = ModelOutput(
             embedding=mean,
@@ -121,8 +151,11 @@ class SentenceEncoder(BaseEncoder):
         )
 
         # Debug print (inputs)
-        if (self.debug):
+        if (self.debug and not self.caching):
             if (self._dbg_counter % 100 == 0):
+                input = self.decoder_tokenizer.batch_decode(tok_ids, clean_up_tokenization_spaces=False,
+                                                            skip_special_tokens=True)
+                enc_toks = self.tokenizer(input, padding=True, truncation=True, return_tensors='pt')
                 with open(self.output_log_filepath, "w", encoding="utf-8") as enc_log_file:
                     # print("\n".join(input[:2]))
                     print("\n".join(self.tokenizer.batch_decode(enc_toks["input_ids"])), file=enc_log_file)
