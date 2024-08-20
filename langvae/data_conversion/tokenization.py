@@ -136,7 +136,7 @@ class TokenizedDataSet(Dataset):
 
         one_hot = one_hot.to(self.device)
 
-        return DatasetOutput(data=one_hot.to_dense() if not sparse else one_hot)
+        return DatasetOutput(data=one_hot.to_dense() if not self.sparse else one_hot)
 
 
 class TokenizedAnnotatedDataSet(TokenizedDataSet):
