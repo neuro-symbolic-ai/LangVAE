@@ -36,6 +36,7 @@ class TokenizedDataSet(Dataset):
                  max_len: int,
                  caching: bool = False,
                  cache_persistence: str = None,
+                 sparse: bool = False,
                  device: str = "cpu"):
         """
         Initializes the TokenizedDataSet with the given source data, tokenizer, maximum sequence length, and device.
@@ -46,6 +47,7 @@ class TokenizedDataSet(Dataset):
             max_len (int): The maximum length of the tokenized output.
             caching (bool): Activate caching of the tokenized inputs to accelerate reads.
             cache_persistence (str): File path for persisting cached inputs, if caching is activated.
+            sparse (bool): If true, output will be sparse COO tensors, instead of dense ones.
             device (str): The device to which tensors will be sent. Defaults to "cpu".
         """
         self.source = source
@@ -56,6 +58,7 @@ class TokenizedDataSet(Dataset):
         self.cache = dict()
         self.cache_persistence = cache_persistence
         self.vocab_size = len(self.tokenizer.get_vocab())
+        self.sparse = sparse
 
         if (caching and cache_persistence):
             try:
@@ -131,7 +134,9 @@ class TokenizedDataSet(Dataset):
                             with jsonlines.open(self.cache_persistence, mode='a') as cache_writer:
                                 cache_writer.write({"key": keys[i].hex(), "value": json.dumps(value)})
 
-        return DatasetOutput(data=one_hot.to(self.device).to_dense())
+        one_hot = one_hot.to(self.device)
+
+        return DatasetOutput(data=one_hot.to_dense() if not sparse else one_hot)
 
 
 class TokenizedAnnotatedDataSet(TokenizedDataSet):
@@ -153,6 +158,8 @@ class TokenizedAnnotatedDataSet(TokenizedDataSet):
                  tokenizer: PreTrainedTokenizer,
                  max_len: int,
                  annotations: List[str],
+                 caching: bool = False,
+                 cache_persistence: str = None,
                  device: str = "cpu"):
         """
         Initializes the TokenizedAnnotatedDataSet.
@@ -162,11 +169,15 @@ class TokenizedAnnotatedDataSet(TokenizedDataSet):
             tokenizer (PreTrainedTokenizer): The tokenizer to be used for tokenization.
             max_len (int): The maximum length of the tokenized output.
             annotations (List[str]): List of annotation types to be processed.
+            caching (bool): Activate caching of the tokenized inputs to accelerate reads.
+            cache_persistence (str): File path for persisting cached inputs, if caching is activated.
             device (str): The device to which tensors will be sent. Defaults to "cpu".
         """
         super().__init__(source, tokenizer, max_len, device)
         self.annotations = annotations
         self.annot_map = dict()
+        self.cache = dict()
+        self.cache_persistence = cache_persistence
 
         all_labels = {annot: set() for annot in annotations}
         if isinstance(self.source, tuple):

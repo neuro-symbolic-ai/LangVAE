@@ -135,7 +135,7 @@ class CyclicalScheduleKLThresholdTrainer(BaseTrainer):
 
         self.model.eval()
         cur_beta = self.model.cur_beta
-        self.model.cur_beta = 0.0
+        self.model.cur_beta = 1.0
 
         epoch_loss = 0
 
