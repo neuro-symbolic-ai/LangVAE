@@ -1,8 +1,9 @@
 import json
 import torch
+from torch import Tensor
 import torch.nn.functional as F
 import jsonlines
-from typing import Tuple, List, Union, Iterable
+from typing import Tuple, List, Dict, Union, Iterable
 from string import ascii_letters
 from itertools import combinations
 from xxhash import xxh128_digest
@@ -15,6 +16,42 @@ from saf import Sentence
 
 def get_hash(value: str) -> bytes:
     return xxh128_digest(value.encode("utf8"), seed=0)
+
+def collate_sparse_fn(batch, *, collate_fn_map: dict = None):
+    elem: Tensor = batch[0]
+
+    if (isinstance(elem, DatasetOutput)):
+        result = dict()
+        for key in elem:
+            if (isinstance(elem[key], Tensor)):  # Pads tensors to the batch maximum length
+                max_len = max([b[key][0].shape[0] for b in batch])
+                if (elem[key].layout == torch.sparse_coo):
+                    result[key] = torch.stack([
+                        torch.cat([
+                            b[key][0],
+                            torch.zeros((max_len - b[key][0].shape[0],) + tuple(b[key][0].shape[1:]),
+                                        dtype=b[key][0].dtype,
+                                        layout=b[key][0].layout)
+                        ])
+                        for b in batch
+                    ])
+                else:
+                    result[key] = torch.stack([
+                        torch.cat([
+                            b[key][0],
+                            torch.zeros((max_len - b[key][0].shape[0],) + tuple(b[key][0].shape[1:]),
+                                        dtype=b[key][0].dtype)
+                        ])
+                        for b in batch
+                    ])
+            else:
+                result[key] = [b[key][0] for b in batch]
+
+        result = DatasetOutput(result)
+    else:
+        result = batch
+
+    return result
 
 
 class TokenizedDataSet(Dataset):
@@ -29,17 +66,21 @@ class TokenizedDataSet(Dataset):
         source (Union[Iterable[Sentence], List[str]]): The source data containing SAF Sentences or strings.
         tokenizer (PreTrainedTokenizer): The tokenizer used for converting text to tokens.
         max_len (int): The maximum length of the tokenized sequences.
-        device (str): The computing device (e.g., 'cpu', 'cuda') where the tensors will be stored when retrieved.
+        caching (bool): Activate caching of the tokenized inputs to accelerate reads.
+        cache_persistence (str): File path for persisting cached inputs, if caching is activated.
+        tokenizer_options (dict): Options for the tokenizer.
+        vocab_size (int): Size of the tokenizer vocabulary.
     """
     def __init__(self, source: Union[Iterable[Sentence], List[str]],
                  tokenizer: PreTrainedTokenizer,
                  max_len: int,
                  caching: bool = False,
                  cache_persistence: str = None,
-                 sparse: bool = False,
-                 device: str = "cpu"):
+                 return_tensors: bool = True,
+                 one_hot: bool = True,
+                 tokenizer_options: dict = None):
         """
-        Initializes the TokenizedDataSet with the given source data, tokenizer, maximum sequence length, and device.
+        Initializes the TokenizedDataSet with the given source data, tokenizer and maximum sequence length.
 
         Args:
             source (Union[Iterable[Sentence], List[str]]): The source data containing sentences or strings.
@@ -47,18 +88,23 @@ class TokenizedDataSet(Dataset):
             max_len (int): The maximum length of the tokenized output.
             caching (bool): Activate caching of the tokenized inputs to accelerate reads.
             cache_persistence (str): File path for persisting cached inputs, if caching is activated.
-            sparse (bool): If true, output will be sparse COO tensors, instead of dense ones.
-            device (str): The device to which tensors will be sent. Defaults to "cpu".
         """
         self.source = source
         self.tokenizer = tokenizer
         self.max_len = max_len
         self.caching = caching
-        self.device = device
         self.cache = dict()
-        self.cache_persistence = cache_persistence
+        self.cache_persistence = cache_persistence.replace("/", "__")
+        self.return_tensors = return_tensors
+        self.one_hot = one_hot
+        self.tokenizer_options = dict() if not tokenizer_options else tokenizer_options
         self.vocab_size = len(self.tokenizer.get_vocab())
-        self.sparse = sparse
+
+        if ("return_tensors" in self.tokenizer_options):
+            del self.tokenizer_options["return_tensors"]
+
+        if (return_tensors and not one_hot):
+            self.tokenizer_options["padding"] = True
 
         if (caching and cache_persistence):
             try:
@@ -66,11 +112,7 @@ class TokenizedDataSet(Dataset):
                     for entry in tqdm(cache_reader, desc=f"Loading dataset cache at {cache_persistence}"):
                         key = bytes.fromhex(entry["key"])
                         value = json.loads(entry["value"])
-                        indices = list(range(max_len))
-                        self.cache[key] = torch.sparse_coo_tensor([indices, value["ids"]],
-                                                                  [1] * len(indices),
-                                                                  (max_len, self.vocab_size),
-                                                                  dtype=torch.int8)
+                        self.cache[key] = value
             except IOError:
                 pass
 
@@ -83,7 +125,7 @@ class TokenizedDataSet(Dataset):
         """
         return len(self.source)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx) -> DatasetOutput:
         """
         Retrieves an item by its index and returns the tokenized and one-hot encoded data.
 
@@ -107,36 +149,60 @@ class TokenizedDataSet(Dataset):
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
-        one_hot = None
+        tokenized = None
         keys = None
         if (self.caching):
             keys = [get_hash(sent) for sent in sentences]
             try:
                 cached = [self.cache[key] for key in keys]
-                one_hot = torch.stack(cached)
+                tokenized = {"input_ids": [c["input_ids"] for c in cached],
+                             "attention_mask": [c["attention_mask"] for c in cached]}
             except KeyError:
                 pass
 
-        if (one_hot is None):
-            tokenized = self.tokenizer(sentences, padding="max_length", truncation=True, max_length=self.max_len, return_tensors='pt')
-            one_hot = torch.stack([
-                torch.sparse_coo_tensor([list(range(self.max_len)), tokenized["input_ids"][i]],
-                                        [1] * self.max_len, (self.max_len, self.vocab_size), dtype=torch.int8)
-                for i in range(len(tokenized["input_ids"]))
-            ])
+        if (tokenized is None):
+            tokenized = self.tokenizer(sentences, truncation=True, max_length=self.max_len, **self.tokenizer_options)
 
             if (self.caching):
                 for i in range(len(sentences)):
                     if (keys[i] not in self.cache):
-                        self.cache[keys[i]] = one_hot[i].coalesce()
+                        self.cache[keys[i]] = {
+                            "input_ids": tokenized["input_ids"][0],
+                            "attention_mask": tokenized["attention_mask"][0]
+                        }
                         if (self.cache_persistence):
-                            value = {"ids": self.cache[keys[i]].indices()[1].tolist()}
+                            value = {"input_ids": self.cache[keys[i]]["input_ids"],
+                                     "attention_mask": self.cache[keys[i]]["attention_mask"]}
                             with jsonlines.open(self.cache_persistence, mode='a') as cache_writer:
                                 cache_writer.write({"key": keys[i].hex(), "value": json.dumps(value)})
 
-        one_hot = one_hot.to(self.device)
+        input_ids = tokenized["input_ids"]
+        attention_mask = tokenized["attention_mask"]
 
-        return DatasetOutput(data=one_hot.to_dense() if not self.sparse else one_hot)
+        if (self.one_hot):
+            max_len = max([len(ids) for ids in input_ids])
+            input_ids = torch.stack([
+                torch.cat([
+                    torch.sparse_coo_tensor([list(range(len(ids))), ids],
+                                            [1] * len(ids),
+                                            (len(ids), self.vocab_size),
+                                            dtype=torch.int8),
+                    torch.zeros(max_len - len(ids), self.vocab_size, dtype=torch.int8, layout=torch.sparse_coo)
+                ])
+                for ids in input_ids
+            ])
+
+            attention_mask = torch.stack([torch.tensor(atts + [0] * (max_len - len(atts))) for atts in attention_mask])
+
+            if (not self.return_tensors):
+                input_ids = input_ids.tolist()
+        elif (self.return_tensors):
+            input_ids = torch.tensor(input_ids)
+            attention_mask = torch.tensor(tokenized["attention_mask"])
+
+        return DatasetOutput(data=input_ids,
+                             input_ids=input_ids,
+                             attention_mask=attention_mask)
 
 
 class TokenizedAnnotatedDataSet(TokenizedDataSet):
@@ -151,16 +217,19 @@ class TokenizedAnnotatedDataSet(TokenizedDataSet):
         tokenizer (PreTrainedTokenizer): The tokenizer used for tokenization.
         max_len (int): The maximum length of the tokenized output.
         annotations (List[str]): List of annotation types to be processed.
-        device (str): The device to which tensors will be sent. Defaults to "cpu".
-        annot_map (dict): A mapping from annotation labels to token IDs.
+        caching (bool): Activate caching of the tokenized inputs to accelerate reads.
+        cache_persistence (str): File path for persisting cached inputs, if caching is activated.
+        tokenizer_options (dict): Options for the tokenizer.
     """
     def __init__(self, source: Union[Iterable[Sentence], Tuple[List[List[str]], List[List[str]]]],
                  tokenizer: PreTrainedTokenizer,
                  max_len: int,
-                 annotations: List[str],
+                 annotations: Dict[str, List[str]],
                  caching: bool = False,
                  cache_persistence: str = None,
-                 device: str = "cpu"):
+                 return_tensors: bool = True,
+                 one_hot: bool = True,
+                 tokenizer_options: dict = None):
         """
         Initializes the TokenizedAnnotatedDataSet.
 
@@ -168,33 +237,14 @@ class TokenizedAnnotatedDataSet(TokenizedDataSet):
             source (Union[Iterable[Sentence], Tuple[List[List[str]], List[List[str]]]]): The source data containing annotated sentences.
             tokenizer (PreTrainedTokenizer): The tokenizer to be used for tokenization.
             max_len (int): The maximum length of the tokenized output.
-            annotations (List[str]): List of annotation types to be processed.
+            annotations (Dict[str, List[str]]): List of annotation types to be processed.
             caching (bool): Activate caching of the tokenized inputs to accelerate reads.
             cache_persistence (str): File path for persisting cached inputs, if caching is activated.
             device (str): The device to which tensors will be sent. Defaults to "cpu".
         """
-        super().__init__(source, tokenizer, max_len, device)
+        super().__init__(source, tokenizer, max_len, caching, cache_persistence,
+                         return_tensors, one_hot, tokenizer_options)
         self.annotations = annotations
-        self.annot_map = dict()
-        self.cache = dict()
-        self.cache_persistence = cache_persistence
-
-        all_labels = {annot: set() for annot in annotations}
-        if isinstance(self.source, tuple):
-            for item in self.source[1]:
-                all_labels[self.annotations[0]].update(item)
-        else:
-            for sent in self.source:
-                for annot in self.annotations:
-                    if annot in sent.annotations:
-                        all_labels[annot].update(sent.annotations.get(annot, " ") if isinstance(sent.annotations[annot], Iterable) else [sent.annotations[annot]])
-                    else:
-                        all_labels[annot].update([tok.annotations.get(annot, " ") for tok in sent.tokens])
-
-        char_pairs = sorted([" "] + ["".join(pair) for pair in list(combinations(list(ascii_letters), 2))])
-        char_pair_ids = [tok_ids[0] for tok_ids in self.tokenizer(char_pairs, add_special_tokens=False)["input_ids"] if len(tok_ids) < 2]
-        for annot in annotations:
-            self.annot_map[annot] = dict(zip(sorted(all_labels[annot]), char_pair_ids[:len(all_labels[annot])]))
 
     def __len__(self):
         """
@@ -217,17 +267,18 @@ class TokenizedAnnotatedDataSet(TokenizedDataSet):
         """
         if isinstance(self.source, tuple):
             sentences = self.source[0][idx] if isinstance(idx, slice) else [self.source[0][idx]]
-            labels = {self.annotations[0]: self.source[1][idx]}
+            labels = {list(self.annotations.keys())[0]: self.source[1][idx]}
         else:
             items = self.source[idx] if isinstance(idx, slice) else [self.source[idx]]
             sentences = [[tok.surface for tok in sent.tokens] for sent in items]
-            labels = {annot: list() for annot in self.annotations}
+            labels = list()
             for sent in items:
+                labels.append(dict())
                 for annot in self.annotations:
                     if annot in sent.annotations:
-                        labels[annot].append(sent.annotations[annot])
+                        labels[-1][annot] = sent.annotations[annot]
                     else:
-                        labels[annot].append([tok.annotations.get(annot, " ") for tok in sent.tokens])
+                        labels[-1][annot] = [tok.annotations.get(annot, " ") for tok in sent.tokens]
 
         if not self.tokenizer.pad_token:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -237,32 +288,105 @@ class TokenizedAnnotatedDataSet(TokenizedDataSet):
         for i in range(len(sentences)):
             sentences[i] = [" " + tok for tok in sentences[i]]
 
-        tokenized = self.tokenizer(sentences, padding="max_length", truncation=True, max_length=self.max_len,
-                                   is_split_into_words=True, return_tensors='pt')
-        one_hot = F.one_hot(tokenized["input_ids"], num_classes=len(self.tokenizer.get_vocab())).to(torch.int8)
-        words_idx = [[widx for widx in tokenized.words(i) if widx is not None]
-                     for i in range(tokenized["input_ids"].shape[0])]
+        tokenized = None
+        keys = None
+        annotations = None
+        if (self.caching):
+            keys = [get_hash(" ".join(sent)) for sent in sentences]
+            try:
+                cached = [self.cache[key] for key in keys]
+                tokenized = {"input_ids": [c["input_ids"] for c in cached],
+                             "attention_mask": [c["attention_mask"] for c in cached]}
+                annotations = [c["annotations"] for c in cached]
+            except KeyError:
+                pass
 
-        tokenized_annot_oh = dict()
-        for annot in self.annotations:
-            tokenized_annot_oh[annot] = [F.one_hot(torch.tensor([self.annot_map[annot][lbl] for lbl in lbls]),
-                                                   num_classes=len(self.tokenizer.get_vocab())).to(torch.int8)
-                                         for lbls in labels[annot]]
+        if (tokenized is None):
+            tokenized = self.tokenizer(sentences, truncation=True, max_length=self.max_len,
+                                       is_split_into_words=True, **self.tokenizer_options)
+            words_idx = [[widx for widx in tokenized.words(i) if widx is not None]
+                         for i in range(len(tokenized["input_ids"]))]
 
-        batch = torch.zeros((one_hot.shape[0], one_hot.shape[1], one_hot.shape[2] * (len(self.annotations) + 1)))
-        for i in range(one_hot.shape[0]):
-            for j in range(one_hot.shape[1] - len(words_idx[i])):
-                batch[i,j][:one_hot.shape[2]] = one_hot[i,j]
-                for k in range(len(self.annotations)):
-                    batch[i, j][one_hot.shape[2] * (k + 1): one_hot.shape[2] * (k + 2)] = one_hot[i,j]
-            for j in range(one_hot.shape[1] - len(words_idx[i]), one_hot.shape[1]):
-                batch[i, j][:one_hot.shape[2]] = one_hot[i, j]
-                for k in range(len(self.annotations)):
-                    annot = self.annotations[k]
-                    p = j - (one_hot.shape[1] - len(words_idx[i]))
-                    try:
-                        batch[i, j][one_hot.shape[2] * (k + 1): one_hot.shape[2] * (k + 2)] = tokenized_annot_oh[annot][i][words_idx[i][p]]
-                    except:
-                        print("ERROR!")
+            annotations = list()
+            for lbls in labels:
+                annotations.append(dict())
+                for annot in lbls:
+                    annotations[-1][annot] = [self.annotations[annot].index(lbl) for lbl in lbls[annot]][:self.max_len]
 
-        return DatasetOutput(data=batch.to(self.device))
+            if (self.caching):
+                for i in range(len(sentences)):
+                    if (keys[i] not in self.cache):
+                        self.cache[keys[i]] = {
+                            "input_ids": tokenized["input_ids"][i],
+                            "attention_mask": tokenized["attention_mask"][i],
+                            "annotations": annotations[i]
+                        }
+                        if (self.cache_persistence):
+                            value = {"input_ids": self.cache[keys[i]]["input_ids"],
+                                     "attention_mask": self.cache[keys[i]]["attention_mask"],
+                                     "annotations": self.cache[keys[i]]["annotations"]}
+                            with jsonlines.open(self.cache_persistence, mode='a') as cache_writer:
+                                cache_writer.write({"key": keys[i].hex(), "value": json.dumps(value)})
+
+        input_ids = tokenized["input_ids"]
+        attention_mask = tokenized["attention_mask"]
+
+        if (self.one_hot):
+            max_len = max([len(ids) for ids in input_ids])
+            input_ids = torch.stack([
+                torch.cat([
+                    torch.sparse_coo_tensor([list(range(len(ids))), ids],
+                                            [1] * len(ids),
+                                            (len(ids), self.vocab_size),
+                                            dtype=torch.int8),
+                    torch.zeros(max_len - len(ids), self.vocab_size, dtype=torch.int8, layout=torch.sparse_coo)
+                ])
+                for ids in input_ids
+            ])
+
+            attention_mask = torch.stack([torch.tensor(atts + [0] * (max_len - len(atts))) for atts in attention_mask])
+
+            annotations_oh = list()
+            for i in range(len(annotations)):
+                annotations_oh.append(dict())
+                for annot in self.annotations:
+                    lbl_ids = annotations[i][annot]
+                    annotations_oh[i][annot] = torch.cat([
+                        torch.sparse_coo_tensor([list(range(len(lbl_ids))), lbl_ids],
+                                                [1] * len(lbl_ids),
+                                                (len(lbl_ids), len(self.annotations[annot])),
+                                                dtype=torch.int8),
+                        torch.zeros(max_len - len(lbl_ids), len(self.annotations[annot]), dtype=torch.int8, layout=torch.sparse_coo)
+                    ])
+
+            annotations = annotations_oh
+
+            if (not self.return_tensors):
+                input_ids = input_ids.tolist()
+                annotations_l = list()
+                for i in range(len(annotations)):
+                    annotations_l.append(dict())
+                    for annot in self.annotations:
+                        annotations_l[i][annot] = annotations[annot].tolist()
+
+                annotations = annotations_l
+
+        elif (self.return_tensors):
+            input_ids = torch.tensor(input_ids)
+            attention_mask = torch.tensor(tokenized["attention_mask"])
+            annotations_t = list()
+            for i in range(len(annotations)):
+                annotations_t.append(dict())
+                for annot in self.annotations:
+                    annotations_t[i][annot] = torch.tensor(annotations[annot])
+
+            annotations = annotations_t
+
+        if (self.one_hot or self.return_tensors):
+            annotations = {annot: torch.stack([annotations[i][annot] for i in range(len(annotations))])}
+
+        return DatasetOutput(data=input_ids,
+                             input_ids=input_ids,
+                             attention_mask=attention_mask,
+                             **annotations)
+

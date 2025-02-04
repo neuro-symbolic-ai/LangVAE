@@ -10,7 +10,7 @@ from saf import Sentence
 from langvae import LangVAE
 from langvae.encoders import SentenceEncoder
 from langvae.decoders import SentenceDecoder
-from langvae.data_conversion.tokenization import TokenizedDataSet
+from langvae.data_conversion.tokenization import TokenizedAnnotatedDataSet
 from langvae.pipelines import LanguageTrainingPipeline
 from langvae.trainers import CyclicalScheduleKLThresholdTrainer, CyclicalScheduleKLThresholdTrainerConfig
 from langvae.trainers.training_callbacks import TensorBoardCallback
@@ -19,13 +19,14 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODE = "train"
 
 CONFIG = {
-    "encoder": "bert-base-cased",
-    "decoder": "gpt2",
-    # "encoder": "google/flan-t5-base",
-    # "decoder": "meta-llama/Llama-3.2-3B",
+    # "encoder": "bert-base-cased",
+    # "decoder": "gpt2",
+    "encoder": "google/flan-t5-base",
+    "decoder": "meta-llama/Llama-3.2-3B",
     "latent_size": 128,
     "max_sent_len": 32,
-    "ds_prefix": "eb",
+    "ds_prefix": "wn",
+    "annotation": "dsr",
     "num_epochs": 50,
     "batch_size": 10 if (MODE == "dev") else 100,
     "lr": 1e-3,
@@ -41,23 +42,38 @@ def exclude_sentence(sent: Union[Sentence, str]):
 
 def main(config: dict):
     if (MODE == "dev"):
-        datasets = [WordNetFilteredDataSet()[:1000],]
+        dataset = [WordNetFilteredDataSet()[:1000],]
     else:
-        datasets = list()
+        dataset = None
+        annotations = None
         if ("wkt" in config["ds_prefix"]):
             wkt_dataset = WiktionaryDefinitionCorpus.from_resource("pos+lemma+ctag+dep+dsr")
+            annotations = wkt_dataset.annotations()
             wkt_dataset = [sent for sent in wkt_dataset if not exclude_sentence(sent)]
-            datasets.append(wkt_dataset)
-        if ("wn" in config["ds_prefix"]):
-            wn_dataset = WordNetFilteredDataSet()
-            datasets.append(wn_dataset)
-        if ("eb" in config["ds_prefix"]):
-            eb_dataset = [sent for sent in EntailmentBankDataSet()
-                          if (sent.annotations["type"] == "answer" or sent.annotations["type"].startswith("context"))]
-            datasets.append(eb_dataset)
+            dataset = wkt_dataset
+        elif ("wn" in config["ds_prefix"]):
+            wn_dataset = WordNetFilteredDataSet.from_resource("pos+lemma+ctag+dep+dsr+srl")
+            annotations = wn_dataset.annotations()
+            dataset = wn_dataset
+        elif ("eb" in config["ds_prefix"]):
+            eb_dataset = EntailmentBankDataSet.from_resource("pos+lemma+ctag+dep+srl#noproof")
+            annotations = eb_dataset.annotations()
+            dataset = [
+                sent for sent in eb_dataset
+                if (sent.annotations["type"] == "answer" or sent.annotations["type"].startswith("context"))
+            ]
 
-    # eval_size = int(0.05 * len(dataset))
-    eval_size = [int(0.01 * len(ds)) for ds in datasets]
+    eval_size = int(0.05 * len(dataset))
+
+    annotations = {config["annotation"]: annotations[config["annotation"]]}
+    if (config["annotation"] == "srl"):
+        for sent in dataset:
+            for token in sent.tokens:
+                srl = token.annotations["srl"]
+                token.annotations["srl_f"] = [lbl for lbl in srl if (lbl != "O")][0] if (len(set(srl)) > 1) else srl[0]
+
+        annotations = {"srl_f": annotations["srl"]}
+
     latent_size = config["latent_size"]
     max_sent_len = config["max_sent_len"]
     ds_prefix = config["ds_prefix"]
@@ -66,26 +82,25 @@ def main(config: dict):
     # decoder = SentenceDecoder("princeton-nlp/Sheared-LLaMA-2.7B", LATENT_SIZE, MAX_SENT_LEN, device=DEVICE,
     #                           load_in_4bit=True, device_map="auto")
     encoder = SentenceEncoder(config["encoder"], latent_size, decoder.tokenizer, caching=True, device=DEVICE)
-    train_dataset = TokenizedDataSet(sorted(chain(*[datasets[i][:-eval_size[i]] for i in range(len(datasets))]),
-                                            key=lambda x: len(x.surface), reverse=True),
-                                     decoder.tokenizer, decoder.max_len, caching=True,
-                                     cache_persistence=f"{ds_prefix}_train_tok-{config['decoder']}_cache.jsonl")
-    eval_dataset = TokenizedDataSet(sorted(chain(*[datasets[i][-eval_size[i]:] for i in range(len(datasets))]),
-                                           key=lambda x: len(x.surface), reverse=True),
-                                    decoder.tokenizer, decoder.max_len, caching=True,
-                                    cache_persistence=f"{ds_prefix}_eval_tok-{config['decoder']}_cache.jsonl")
+    train_dataset = TokenizedAnnotatedDataSet(sorted(dataset[:-eval_size], key=lambda x: len(x.surface), reverse=True),
+                                              decoder.tokenizer, decoder.max_len, caching=True,
+                                              annotations=annotations,
+                                              cache_persistence=f"{ds_prefix}_train_tok-{config['decoder']}_annot_cache.jsonl")
+    eval_dataset = TokenizedAnnotatedDataSet(sorted(dataset[-eval_size:], key=lambda x: len(x.surface), reverse=True),
+                                             decoder.tokenizer, decoder.max_len, caching=True,
+                                             annotations=annotations,
+                                             cache_persistence=f"{ds_prefix}_eval_tok-{config['decoder']}_annot_cache.jsonl")
 
     encoder.debug = True
     decoder.debug = True
 
     model_config = VAEConfig(
-        # input_dim=(train_dataset[0]["data"].shape[-2], train_dataset[0]["data"].shape[-1]),
         latent_dim=latent_size
     )
 
     if (MODE == "train_chkp"):
         print("Loading checkpoint...")
-        model = LangVAE.load_from_folder("wn-langvae-bert-base-cased-gpt2-l128/VAE_training_2024-12-20_20-21-52/checkpoint_epoch_40")
+        model = LangVAE.load_from_folder("wn-langcvae-bert-base-cased-gpt2-l128/VAE_training_2024-12-20_20-21-52/checkpoint_epoch_40")
         model.encoder.to(DEVICE)
         model.decoder.to(DEVICE)
     else:
@@ -94,7 +109,7 @@ def main(config: dict):
 
     # model.debug = True
 
-    exp_label = f"{ds_prefix}-langvae-{config['encoder'].replace('/', '__')}-{config['decoder'].replace('/', '__')}-l{latent_size}"
+    exp_label = f"{ds_prefix}-langcvae-{config['encoder'].replace('/', '__')}-{config['decoder'].replace('/', '__')}-l{latent_size}"
 
     training_config = CyclicalScheduleKLThresholdTrainerConfig(
         output_dir=exp_label,

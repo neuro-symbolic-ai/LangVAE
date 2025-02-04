@@ -23,6 +23,8 @@ def exclude_sentence(sent: Union[Sentence, str]):
 
 def main():
     # dataset = [sent for sent in dataset if not exclude_sentence(sent)]
+    eb_dataset = EntailmentBankDataSet.from_resource("pos+lemma+ctag+dep+srl#noproof")
+    annotations = eb_dataset.annotations()
     dataset = [sent for sent in EntailmentBankDataSet.from_resource("pos+lemma+ctag+dep+srl#noproof")
                if (sent.annotations["type"] == "answer" or sent.annotations["type"].startswith("context"))]
     for sent in dataset:
@@ -34,15 +36,14 @@ def main():
     encoder = AnnotatedSentenceEncoder("google/flan-t5-base", LATENT_SIZE, decoder.tokenizer, 1, device=DEVICE)
 
     train_dataset = TokenizedAnnotatedDataSet(dataset[:-eval_size], decoder.tokenizer, decoder.max_len,
-                                              annotations=["srl_0"], device=DEVICE)
+                                              annotations={"srl_0": annotations["srl"]}, device=DEVICE)
     eval_dataset = TokenizedAnnotatedDataSet(dataset[-eval_size:], decoder.tokenizer, decoder.max_len,
-                                             annotations=["srl_0"], device=DEVICE)
+                                             annotations={"srl_0": annotations["srl"]}, device=DEVICE)
 
     encoder.debug = True
     decoder.debug = True
 
     model_config = VAEConfig(
-        input_dim=(train_dataset[0]["data"].shape[-2], train_dataset[0]["data"].shape[-1] * (1 + len(train_dataset.annotations))),
         latent_dim=LATENT_SIZE
     )
 

@@ -1,4 +1,5 @@
 import torch
+from typing import Dict
 from torch import nn, Tensor
 from xxhash import xxh128_digest
 from transformers import AutoTokenizer, AutoModelForTextEncoding, PreTrainedTokenizer
@@ -63,7 +64,7 @@ class SentenceEncoder(BaseEncoder):
         self._tokenizer = []
         self._decoder_tokenizer = [decoder_tokenizer]
         self.init_pretrained_model()
-        self.linear = nn.Linear(self.encoder.config.hidden_size, 2 * latent_size, bias=False, device=device)
+        self.linear = nn.LazyLinear(2 * latent_size, bias=False, device=device)
         self.caching = caching
         self.cache = dict()
 
@@ -96,7 +97,7 @@ class SentenceEncoder(BaseEncoder):
         self._encoder[0].eval()
         self._encoder[0].requires_grad_(False)
 
-    def recode(self, tok_ids: Tensor) -> Tensor:
+    def recode(self, tok_ids: list[Tensor] | Tensor) -> Tensor:
         pooled = None
         if (self.caching):
             try:
@@ -126,27 +127,41 @@ class SentenceEncoder(BaseEncoder):
 
         return pooled
 
-    def forward(self, x: Tensor) -> ModelOutput:
+    def forward(self, x: Tensor, c: Dict[str, Tensor] = None) -> ModelOutput:
         """
         Processes the input tensor through the encoder and linear transformation to produce latent variables.
 
         Args:
-            x (Tensor): Input tensor containing token IDs.
+            x (Tensor): Input tensor containing token IDs. Sparse tensors will be interpreted as one-hot.
+            c (Tensor): Conditional variable.
 
         Returns:
             ModelOutput: Object containing the latent embedding and log covariance.
         """
-        x = torch.squeeze(x).to(self.device)
 
         # Fix for pythae device allocation bug
         self._encoder[0] = self._encoder[0].to(self.device)
         self.linear = self.linear.to(self.device)
 
-        tok_ids = torch.argmax(x, dim=-1)
+        tok_ids = x
+        if (x.layout == torch.sparse_coo):
+            tok_ids = [x[i].coalesce().indices()[1] for i in range(x.shape[0])]
+
         pooled = self.recode(tok_ids)
-        mean, logvar = self.linear(pooled).chunk(2, -1)
+        pooled_cvars = list()
+        if (c):
+            # pooled_cvars = [self.recode(c[annot].to_dense().argmax(dim=-1)) for annot in c]
+            pos = torch.linspace(0.1, 1, x.shape[1]).to(self.device)
+            pooled_cvars = [
+                ((pos * c[annot].mT).mT.sum(dim=-2) / x.shape[1]).to_dense()
+                for annot in c
+            ]
+
+        enc = torch.cat([pooled] + pooled_cvars, dim=-1) if c else pooled
+        mean, logvar = self.linear(enc).chunk(2, -1)
         output = ModelOutput(
             embedding=mean,
+            cvars_embedding=pooled_cvars,
             log_covariance=logvar
         )
 

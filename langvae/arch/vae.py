@@ -5,15 +5,17 @@ import numpy as np
 import pythae.models.base.base_utils
 import torch
 import torch.nn.functional as F
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Dict, Optional
 from copy import deepcopy
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from pythae.trainers import BaseTrainerConfig
 from pythae.models.nn import BaseEncoder, BaseDecoder
 from pythae.models.base.base_config import BaseAEConfig, EnvironmentConfig
+from pythae.models.base.base_utils import ModelOutput
+from pythae.data.datasets import BaseDataset
 from torch import Tensor
-from torch.utils.tensorboard import SummaryWriter
+# from torch.utils.tensorboard import SummaryWriter
 from pythae.models.vae import VAE, VAEConfig
 from pythae.trainers.training_callbacks import TrainingCallback
 
@@ -33,7 +35,7 @@ This model was trained with {clsname}. It can be downloaded or reloaded using th
 """
 
 
-@torch.jit.script
+@torch.compile
 def vae_nll_loss(recon_x: Tensor,
                  x: Tensor,
                  mu: Tensor,
@@ -61,9 +63,33 @@ def vae_nll_loss(recon_x: Tensor,
                 - Average reconstruction loss.
                 - Average KL divergence.
         """
-    x = torch.squeeze(x).to(recon_x.device)
-    x_tok_ids = torch.argmax(x, dim=-1)
-    mask = (x_tok_ids != pad_token_id).to(torch.int8)
+    # x = torch.squeeze(x).to(recon_x.device)
+
+    # len = min(x.shape[1], recon_x.shape[1])
+    # # print(f"X [{x.shape[1]}], X' [{recon_x.shape[1]}]")
+    # recon_x = recon_x[:, :len, :]
+
+    if (x.layout == torch.sparse_coo):
+        x = x.coalesce()
+        x_dense = torch.zeros(x.shape, dtype=torch.int64, device=x.device)
+        x_dense[:, :, pad_token_id] = 1
+        nz_idx = x.indices().detach().clone()
+        nz_idx[-1] = pad_token_id
+        x_dense[nz_idx.tolist()] = 0
+        x_dense[x.indices().tolist()] = x.values().long()
+        x_tok_ids = x_dense.argmax(dim=-1)
+        # x_tok_ids = [x[i].coalesce().indices()[1][:len] for i in range(x.shape[0])]
+        # x_tok_ids = torch.stack([
+        #     torch.cat([tok_ids, torch.tensor([pad_token_id] * int(tok_ids.shape[0] < len) +
+        #                                      [0] * max(len - tok_ids.shape[0] - 1, 0),
+        #                                      dtype=torch.int64, device=x.device)
+        #     ])
+        #     for tok_ids in x_tok_ids
+        # ])
+        mask = (x_tok_ids != pad_token_id).to(torch.int8)
+    else:
+        x_tok_ids = x.argmax(dim=-1)
+        mask = (x_tok_ids != pad_token_id).to(torch.int8)
 
     recon_loss = (F.nll_loss(torch.log(recon_x).view(recon_x.shape[0] * recon_x.shape[1], recon_x.shape[2]),
                              x_tok_ids.view(recon_x.shape[0] * recon_x.shape[1]),
@@ -72,6 +98,9 @@ def vae_nll_loss(recon_x: Tensor,
     KLD = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp(), dim=-1)
     kl_mask = (KLD > target_kl).float()
     KLD = beta * (kl_mask * KLD)
+
+    # print(f"recon x: {recon_x.mean(dim=0)}")
+    # print(f"recon loss: {recon_loss.mean(dim=0)}, ")
 
     return (recon_loss + KLD).mean(dim=0), recon_loss.mean(dim=0), KLD.mean(dim=0)
 
@@ -121,7 +150,7 @@ class LangVAE(VAE):
         decoder (Optional[BaseDecoder]): Language decoder model that generates text from latent representations.
     """
 
-    loss_writer = SummaryWriter()
+    # loss_writer = SummaryWriter()
 
     def __init__(
             self,
@@ -137,6 +166,47 @@ class LangVAE(VAE):
         self.debug = False
         self._dbg_counter = 0
         self._loss_agg = [0.0, 0.0]
+
+    def forward(self, inputs: BaseDataset, **kwargs):
+        """
+        The VAE model
+
+        Args:
+            inputs (BaseDataset): The training dataset with labels
+
+        Returns:
+            ModelOutput: An instance of ModelOutput containing all the relevant parameters
+
+        """
+
+        x = inputs["data"]
+        x_annot = inputs.keys() - {"data", "input_ids", "attention_mask"}
+        cvars = None
+        if (x_annot):
+            cvars = {annot: inputs[annot] for annot in x_annot}
+
+        encoder_output = self.encoder(x, cvars)
+
+        mu, log_var = encoder_output.embedding, encoder_output.log_covariance
+        cvars_emb = encoder_output.cvars_embedding
+
+        std = torch.exp(0.5 * log_var)
+        z, eps = self._sample_gauss(mu, std)
+        z = torch.cat([z] + cvars_emb, dim=-1) if cvars else z
+
+        recon_x = self.decoder(z, max_len=x.shape[1])["reconstruction"]
+
+        loss, recon_loss, kld = self.loss_function(recon_x, x, mu, log_var, z)
+
+        output = ModelOutput(
+            recon_loss=recon_loss,
+            reg_loss=kld,
+            loss=loss,
+            recon_x=recon_x,
+            z=z,
+        )
+
+        return output
 
     def loss_function(self, recon_x, x, mu, log_var, z) -> Tuple[Tensor, Tensor, Tensor]:
         """
@@ -162,24 +232,24 @@ class LangVAE(VAE):
             losses = vae_nll_loss_supervised(recon_x, x, mu, log_var, z, self.decoder.tokenizer.pad_token_id,
                                              self.cur_beta, self.target_kl, num_annotations)
         else:
-            losses = vae_nll_loss(recon_x, x[:,:,:self.decoder.decoder.config.vocab_size], mu, log_var, z,
-                                  self.decoder.tokenizer.pad_token_id, self.cur_beta, self.target_kl)
+            losses = vae_nll_loss(recon_x, x, mu, log_var, z, self.decoder.tokenizer.pad_token_id,
+                                  self.cur_beta, self.target_kl)
 
         # Log losses with tensorboard.
-        self._loss_agg[0] += losses[0].item()
-        self._loss_agg[1] += losses[2].item()
-        if (self.debug and self._dbg_counter % 10 == 0):
-            # print("\n", [l.item() for l in losses])
-            LangVAE.loss_writer.add_scalar("Loss/train_joint", self._loss_agg[0] / 10, self._dbg_counter // 10)
-            LangVAE.loss_writer.add_scalar("Loss/train_kld", self._loss_agg[1] / 10, self._dbg_counter // 10)
-            LangVAE.loss_writer.flush()
-            self._loss_agg[0] = 0.0
-            self._loss_agg[1] = 0.0
-        self._dbg_counter += 1
+        # self._loss_agg[0] += losses[0].item()
+        # self._loss_agg[1] += losses[2].item()
+        # if (self.debug and self._dbg_counter % 10 == 0):
+        #     # print("\n", [l.item() for l in losses])
+        #     LangVAE.loss_writer.add_scalar("Loss/train_joint", self._loss_agg[0] / 10, self._dbg_counter // 10)
+        #     LangVAE.loss_writer.add_scalar("Loss/train_kld", self._loss_agg[1] / 10, self._dbg_counter // 10)
+        #     LangVAE.loss_writer.flush()
+        #     self._loss_agg[0] = 0.0
+        #     self._loss_agg[1] = 0.0
+        # self._dbg_counter += 1
 
         return losses
 
-    def encode_z(self, x: Tensor) -> Tensor:
+    def encode_z(self, x: Tensor, c: Dict[str, Tensor] = None) -> Tensor | Tuple[Tensor, Tensor]:
         """
         Encodes the input tensor into a latent variable tensor.
 
@@ -189,14 +259,16 @@ class LangVAE(VAE):
         Returns:
             Tensor: A tensor containing the sampled latent variables.
         """
-        encoded = self.encoder(x)
-        mu, log_var = encoded["embedding"], encoded["log_covariance"]
+        encoded = self.encoder(x, c)
+        mu, log_var = encoded.embedding, encoded.log_covariance
+        cvars_emb = encoder_output.cvars_embedding
         std = torch.exp(0.5 * log_var)
         z, eps = self._sample_gauss(mu, std)
+        result = z if (not c) else (z, cvars_emb)
 
-        return z
+        return result
 
-    def decode_sentences(self, z: Tensor) -> List[str]:
+    def decode_sentences(self, z: Tensor, cvars_emb: List[Tensor] = None) -> List[str]:
         """
         Decodes the latent variable tensor into a list of sentences.
 
@@ -206,6 +278,7 @@ class LangVAE(VAE):
         Returns:
             List[str]: A list of strings representing the decoded sentences.
         """
+        z = torch.cat([z] + cvars_emb, dim=-1) if cvars_emb else z
         generated = self.decoder(z)["reconstruction"]
         sents = self.decoder.tokenizer.batch_decode(torch.argmax(generated, dim=-1), skip_special_tokens=True)
 

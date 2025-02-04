@@ -3,8 +3,11 @@ import torch
 import numpy as np
 from typing import List, Optional, Union
 from pythae.pipelines.training import TrainingPipeline, TrainingCallback
+from pythae.data.preprocessors import BaseDataset
+from pythae.customexception import DatasetError
 from pythae.trainers import *
 from langvae.trainers import CyclicalScheduleKLThresholdTrainer, CyclicalScheduleKLThresholdTrainerConfig
+from langvae.data_conversion.tokenization import collate_sparse_fn
 logger = logging.getLogger(__name__)
 
 # make it print to the console.
@@ -14,6 +17,47 @@ logger.setLevel(logging.INFO)
 
 
 class LanguageTrainingPipeline(TrainingPipeline):
+    def _check_dataset(self, dataset: BaseDataset):
+
+        try:
+            dataset_output = dataset[0]
+
+        except Exception as e:
+            raise DatasetError(
+                "Error when trying to collect data from the dataset. Check `__getitem__` method. "
+                "The Dataset should output a dictionnary with keys at least ['data']. "
+                "Please check documentation.\n"
+                f"Exception raised: {type(e)} with message: " + str(e)
+            ) from e
+
+        if "data" not in dataset_output.keys():
+            raise DatasetError(
+                "The Dataset should output a dictionnary with keys ['data']"
+            )
+
+        try:
+            len(dataset)
+
+        except Exception as e:
+            raise DatasetError(
+                "Error when trying to get dataset len. Check `__len__` method. "
+                "Please check documentation.\n"
+                f"Exception raised: {type(e)} with message: " + str(e)
+            ) from e
+
+        # check everything if fine when combined with data loader
+        from torch.utils.data import DataLoader
+
+        dataloader = DataLoader(
+            dataset=dataset,
+            batch_size=min(len(dataset), 2),
+            collate_fn=collate_sparse_fn,
+        )
+        loader_out = next(iter(dataloader))
+        assert len(loader_out.data) == min(
+            len(dataset), 2
+        ), "Error when combining dataset with loader."
+
     def __call__(
         self,
         train_data: Union[np.ndarray, torch.Tensor, torch.utils.data.Dataset],

@@ -1,11 +1,14 @@
 import torch
 from typing import List, Optional
 from torch import Tensor
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from pydantic.dataclasses import dataclass
 from pythae.trainers.base_trainer import BaseTrainer, BaseTrainerConfig
 from pythae.trainers.training_callbacks import TrainingCallback
 from pythae.data.datasets import BaseDataset
 from langvae.arch.vae import LangVAE
+from langvae.data_conversion.tokenization import collate_sparse_fn
 
 
 def frange_cycle_zero_linear(n_iter: int,
@@ -134,8 +137,8 @@ class CyclicalScheduleKLThresholdTrainer(BaseTrainer):
         )
 
         self.model.eval()
-        cur_beta = self.model.cur_beta
-        self.model.cur_beta = 1.0
+        # cur_beta = self.model.cur_beta
+        # self.model.cur_beta = 1.0
 
         epoch_loss = 0
 
@@ -175,9 +178,45 @@ class CyclicalScheduleKLThresholdTrainer(BaseTrainer):
 
         epoch_loss /= len(self.eval_loader)
 
-        self.model.cur_beta = cur_beta
-        if (self.model.debug):
-            LangVAE.loss_writer.add_scalar("Loss/eval", epoch_loss, self.model._dbg_counter // 10)
-            LangVAE.loss_writer.flush()
+        # self.model.cur_beta = cur_beta
+        # if (self.model.debug):
+        #     LangVAE.loss_writer.add_scalar("Loss/eval", epoch_loss, self.model._dbg_counter // 10)
+        #     LangVAE.loss_writer.flush()
 
         return epoch_loss
+
+    def get_train_dataloader(
+        self, train_dataset: BaseDataset
+    ) -> torch.utils.data.DataLoader:
+        if self.distributed:
+            train_sampler = DistributedSampler(
+                train_dataset, num_replicas=self.world_size, rank=self.rank
+            )
+        else:
+            train_sampler = None
+        return DataLoader(
+            dataset=train_dataset,
+            batch_size=self.training_config.per_device_train_batch_size,
+            num_workers=self.training_config.train_dataloader_num_workers,
+            shuffle=False, #(train_sampler is None),
+            sampler=train_sampler,
+            collate_fn=collate_sparse_fn,
+        )
+
+    def get_eval_dataloader(
+        self, eval_dataset: BaseDataset
+    ) -> torch.utils.data.DataLoader:
+        if self.distributed:
+            eval_sampler = DistributedSampler(
+                eval_dataset, num_replicas=self.world_size, rank=self.rank
+            )
+        else:
+            eval_sampler = None
+        return DataLoader(
+            dataset=eval_dataset,
+            batch_size=self.training_config.per_device_eval_batch_size,
+            num_workers=self.training_config.eval_dataloader_num_workers,
+            shuffle=(eval_sampler is None),
+            sampler=eval_sampler,
+            collate_fn=collate_sparse_fn,
+        )

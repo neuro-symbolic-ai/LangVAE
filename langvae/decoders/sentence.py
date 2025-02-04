@@ -7,6 +7,7 @@ from pythae.models.base.base_utils import ModelOutput
 
 FLASH_ATTN_SUPPORTED = [
     "meta-llama/Meta-Llama-3-8B",
+    "meta-llama/Llama-3.2-3B",
     "mistralai/Mistral-7B-v0.3"
 ]
 
@@ -26,7 +27,6 @@ class SentenceDecoder(BaseDecoder):
         device (torch.device): Device on which the model and data are allocated (e.g., 'cpu', 'cuda').
         load_in_4bit (bool): Flag indicating whether to load the model in 4-bit quantisation mode for memory efficiency.
         device_map (str): Device map configuration for model parallelism.
-        max_look_behind (int): Maximum number of tokens to look behind for context in generation.
         args (ModelConfig, optional): Additional configuration arguments.
     """
 
@@ -34,42 +34,35 @@ class SentenceDecoder(BaseDecoder):
                  latent_size: int,
                  max_len: int,
                  device: torch.device = "cpu",
-                 load_in_4bit: bool = False,
                  device_map: str = None,
-                 max_look_behind: int = 2,
                  args=None):  # Args is a ModelConfig instance
         BaseDecoder.__init__(self)
         self.model_path = model_path
 
         self.max_len = max_len
-        self.max_look_behind = max_look_behind
-        self.device_map = device_map
+        self.device_map = device_map if (torch.cuda.is_available() and torch.cuda.device_count() > 1) else None
         self.device = device
         self.dec_hidden_layer_dev_map = None
-        self.load_in_4bit = load_in_4bit
         self._decoder = []
         self._tokenizer = []
 
         self.init_pretrained_model()
-
-        embedding_dim = self.decoder.get_input_embeddings().embedding_dim
 
         dec_ids = torch.unsqueeze(torch.tensor([self.tokenizer.pad_token_id] * 2, dtype=torch.int64, device=self.device), dim=-1)
         pkv = self.decoder(dec_ids).past_key_values
         self.pkv_dims = pkv[0][0].shape[1:]
         self.pkv_dtype = pkv[0][0].dtype
 
-        self.context_embedder = nn.Linear(latent_size, max_len * embedding_dim, dtype=self.pkv_dtype, device=self.device)
         self.context_hidden = nn.ModuleList([
-            nn.Linear(
-                latent_size,
-                self.pkv_dims[0] * self.pkv_dims[1] * self.pkv_dims[2] * 2, # self.pkv_dims[0] * self.pkv_dims[1] * self.pkv_dims[2] == self.decoder.config.hidden_size
+            nn.LazyLinear(
+                self.pkv_dims[0] * self.pkv_dims[1] * self.pkv_dims[2] * 2 * (self.max_len + 1), # self.pkv_dims[0] * self.pkv_dims[1] * self.pkv_dims[2] == self.decoder.config.hidden_size
                 dtype=self.pkv_dtype,
                 device=f"cuda:{self.dec_hidden_layer_dev_map[i]}" if self.dec_hidden_layer_dev_map else self.device
             )
             for i in range(self.decoder.config.num_hidden_layers)
         ])
-        self.dropout = nn.Dropout(p=0.4)
+
+        self.dropout = nn.Dropout(p=0.1)
 
         # Logging outputs
         self._dbg_counter = 0
@@ -97,19 +90,16 @@ class SentenceDecoder(BaseDecoder):
         if (self.model_path in FLASH_ATTN_SUPPORTED):
             ex_params = {"attn_implementation": "flash_attention_2", "offload_buffers": True}
         if (str(self.device).startswith("cuda") and self.device_map):
-            self._decoder = [AutoModelForCausalLM.from_pretrained(self.model_path, load_in_4bit=self.load_in_4bit,
-                                                                  torch_dtype="auto", device_map=self.device_map,
-                                                                  **ex_params)]
+            self._decoder = [AutoModelForCausalLM.from_pretrained(self.model_path, torch_dtype="auto",
+                                                                  device_map=self.device_map, **ex_params)]
             dec_hidden_layer_prefix = [".".join(layer.split(".")[:-1]) for layer in self._decoder[0].hf_device_map
                                        if (layer.split(".")[-1] == str(self.decoder.config.num_hidden_layers - 1))
                                        ][0]
             self.dec_hidden_layer_dev_map = {i: self._decoder[0].hf_device_map[f"{dec_hidden_layer_prefix}.{i}"]
                                              for i in range(self.decoder.config.num_hidden_layers)}
         else:
-            self._decoder = [AutoModelForCausalLM.from_pretrained(self.model_path, load_in_4bit=self.load_in_4bit,
-                                                                  torch_dtype="auto", **ex_params)]
-            if (not self.load_in_4bit):
-                self._decoder = [self.decoder.to(self.device)]
+            self._decoder = [AutoModelForCausalLM.from_pretrained(self.model_path, torch_dtype="auto", **ex_params)]
+            self._decoder = [self.decoder.to(self.device)]
 
         self._decoder[0].eval()
         self._decoder[0].requires_grad_(False)
@@ -119,12 +109,13 @@ class SentenceDecoder(BaseDecoder):
         self._tokenizer[0].pad_token_id = self.tokenizer.eos_token_id
         self.device = self.decoder.device
 
-    def forward(self, z: Tensor) -> ModelOutput:
+    def forward(self, z: Tensor, max_len: int = 0) -> ModelOutput:
         """
         Processes the input latent tensor through the decoder to generate sentences.
 
         Args:
             z (Tensor): Input tensor containing latent representations.
+            max_len (int): Maximum length (tokens) of output sentences.
 
         Returns:
             ModelOutput: The generated sentences as a ModelOutput object: token probability distribution
@@ -132,43 +123,78 @@ class SentenceDecoder(BaseDecoder):
             :math:`V` is the decoder vocabulary size.
         """
         # Fix for pythae device allocation bug
-        if (not (self.load_in_4bit or self.device_map)):
+        if (not self.device_map):
             self._decoder[0] = self._decoder[0].to(self.device)
         else:
             self.device = self._decoder[0].device
-            self.context_embedder = self.context_embedder.to(self.device)
+            # self.context_embedder = self.context_embedder.to(self.device)
+
+        if (not max_len):
+            max_len = self.max_len
 
         z = z.to(self.pkv_dtype).to(self.device)
         dev_map = self.dec_hidden_layer_dev_map
 
-        embedding_dim = self.decoder.get_input_embeddings().embedding_dim
-        context_embeds = self.dropout(self.context_embedder(z)).view(-1, self.max_len, embedding_dim)
-        past = [
-            tuple([h.view(-1,
-                          self.pkv_dims[0],
-                          self.pkv_dims[1],
-                          self.pkv_dims[2]).to(f"cuda:{dev_map[l_idx]}" if dev_map else self.device)
-                   for h in self.dropout(self.context_hidden[l_idx](z)).chunk(2, dim=-1)])
-            for l_idx in range(len(self.context_hidden))
-        ]
+        z_repl = None
+        if (dev_map):
+            for layer_idx in range(len(self.context_hidden)):
+                self.context_hidden[layer_idx].to(f"cuda:{dev_map[layer_idx]}")
+            z_repl = {dev: z.to(f"cuda:{dev}") for dev in set(dev_map.values())}
 
-        generated = torch.zeros(z.shape[0], self.max_len + 1, self.decoder.config.vocab_size, device=self.device, dtype=self.pkv_dtype)
-        dec_ids = torch.unsqueeze(torch.tensor([self.tokenizer.pad_token_id] * z.shape[0], dtype=torch.int64, device=self.device), dim=-1)
-        decoded = self.decoder(input_ids=dec_ids, past_key_values=past)
+        generated = torch.zeros(z.shape[0], max_len + 1, self.decoder.config.vocab_size, device=self.device, dtype=self.pkv_dtype)
+        dec_ids = torch.unsqueeze(torch.tensor([self.tokenizer.bos_token_id] * z.shape[0], dtype=torch.int64, device=self.device), dim=-1)
+        # decoded = self.decoder(input_ids=dec_ids)
+        # generated[:, 0, :] = F.softmax(decoded.logits[:, -1, :], dim=-1)
         generated[:, 0,:] += F.one_hot(dec_ids, num_classes=generated.shape[-1]).squeeze()
+        ctx_mem = [None] * self.decoder.config.num_hidden_layers
         past_dec = [None] * self.decoder.config.num_hidden_layers
 
-        for i in range(self.max_len):
-            for layer_idx in range(self.decoder.config.num_hidden_layers):
-                past_dec[layer_idx] = (
-                    torch.cat([past[layer_idx][0], decoded.past_key_values[layer_idx][0][:, :, 1:, :]], dim=-2),
-                    torch.cat([past[layer_idx][1], decoded.past_key_values[layer_idx][1][:, :, 1:, :]], dim=-2),
-                )
+        for layer_idx in range(self.decoder.config.num_hidden_layers):
+            hidden_state = z_repl[dev_map[layer_idx]] if dev_map else z
 
-            gen_ids = generated[:, max(0, i-self.max_look_behind):i+1, :].argmax(dim=-1)
-            embeds = self.decoder.get_input_embeddings()(gen_ids) + context_embeds[:, max(0, i-self.max_look_behind):i+1, :]
-            decoded = self.decoder(inputs_embeds=embeds, past_key_values=past_dec)
-            generated[:, i+1,:] = F.softmax(decoded.logits[:, -1, :], dim=-1)
+            past = tuple([
+                h.view(-1,
+                       self.pkv_dims[0],
+                       self.pkv_dims[1] * (self.max_len + 1),
+                       self.pkv_dims[2]).to(f"cuda:{dev_map[layer_idx]}" if dev_map else self.device)
+                for h in self.dropout(self.context_hidden[layer_idx](hidden_state)).chunk(2, dim=-1)
+            ])
+
+            ctx_mem[layer_idx] = (
+                past[0],
+                past[1]
+            )
+            past_dec[layer_idx] = (
+                past[0][:, :, :1, :],
+                past[1][:, :, :1, :]
+            )
+
+        for i in range(max_len):
+            # ctx_embed = context_embeds[:, max(0, i-self.max_look_behind + 1):i+1, :]
+            # past_dec = self.compute_kv_residuals(decoded.past_key_values, z, z_repl, dev_map)
+            gen_ids = generated[:, max(0, i):i+1, :].argmax(dim=-1)
+            # embeds = self.decoder.get_input_embeddings()(gen_ids)  # + ctx_embed
+            decoded = self.decoder(input_ids=gen_ids, past_key_values=past_dec)
+
+            past_dec = [
+                (
+                    torch.cat([
+                        decoded.past_key_values[layer_idx][0][:, :, :-2, :],
+                        ctx_mem[layer_idx][0][:, :, i+1:i+2, :],
+                        decoded.past_key_values[layer_idx][0][:, :, -1:, :]
+                    ],
+                    dim=-2),
+                    torch.cat([
+                        decoded.past_key_values[layer_idx][1][:, :, :-2, :],
+                        ctx_mem[layer_idx][1][:, :, i+1:i+2, :],
+                        decoded.past_key_values[layer_idx][1][:, :, -1:, :]
+                    ],
+                    dim=-2),
+                )
+                for layer_idx in range(self.decoder.config.num_hidden_layers)
+            ]
+
+            generated[:, i+1, :] = F.softmax(decoded.logits[:, -1, :], dim=-1)
 
         # Debug print (outputs)
         if (self.debug):
@@ -184,6 +210,6 @@ class SentenceDecoder(BaseDecoder):
             self._dbg_counter += 1
 
         output = ModelOutput(
-            reconstruction=generated[:, 1:,:]
+            reconstruction=generated[:, 1:max_len + 1,:]
         )
         return output

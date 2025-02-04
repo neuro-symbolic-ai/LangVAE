@@ -16,7 +16,7 @@ def load_requirements() -> list:
 
 setup(
     name='LangVAE',
-    version='0.5.2',
+    version='0.6.0',
     packages=[
         'langvae',
         'langvae.arch',
