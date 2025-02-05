@@ -25,7 +25,6 @@ class SentenceDecoder(BaseDecoder):
         latent_size (int): Size of the latent space.
         max_len (int): Maximum length (in tokens) of the generated sentences.
         device (torch.device): Device on which the model and data are allocated (e.g., 'cpu', 'cuda').
-        load_in_4bit (bool): Flag indicating whether to load the model in 4-bit quantisation mode for memory efficiency.
         device_map (str): Device map configuration for model parallelism.
         args (ModelConfig, optional): Additional configuration arguments.
     """
@@ -38,6 +37,7 @@ class SentenceDecoder(BaseDecoder):
                  args=None):  # Args is a ModelConfig instance
         BaseDecoder.__init__(self)
         self.model_path = model_path
+        self.latent_size = latent_size
 
         self.max_len = max_len
         self.device_map = device_map if (torch.cuda.is_available() and torch.cuda.device_count() > 1) else None

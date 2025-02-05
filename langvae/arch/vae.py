@@ -1,6 +1,6 @@
 import sys
 import os
-import pickle
+import json
 import numpy as np
 import pythae.models.base.base_utils
 import torch
@@ -10,7 +10,7 @@ from copy import deepcopy
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from pythae.trainers import BaseTrainerConfig
-from pythae.models.nn import BaseEncoder, BaseDecoder
+# from pythae.models.nn import BaseEncoder, BaseDecoder
 from pythae.models.base.base_config import BaseAEConfig, EnvironmentConfig
 from pythae.models.base.base_utils import ModelOutput
 from pythae.data.datasets import BaseDataset
@@ -18,6 +18,9 @@ from torch import Tensor
 # from torch.utils.tensorboard import SummaryWriter
 from pythae.models.vae import VAE, VAEConfig
 from pythae.trainers.training_callbacks import TrainingCallback
+
+from langvae.encoders import SentenceEncoder
+from langvae.decoders import SentenceDecoder
 
 model_card_template = """---
 language: en
@@ -146,8 +149,8 @@ class LangVAE(VAE):
 
     Args:
         model_config (VAEConfig): The configuration of the VAE model.
-        encoder (Optional[BaseEncoder]): Language encoder model that processes input data and returns sentence embeddings.
-        decoder (Optional[BaseDecoder]): Language decoder model that generates text from latent representations.
+        encoder (Optional[SentenceEncoder]): Language encoder model that processes input data and returns sentence embeddings.
+        decoder (Optional[SentenceDecoder]): Language decoder model that generates text from latent representations.
     """
 
     # loss_writer = SummaryWriter()
@@ -155,8 +158,8 @@ class LangVAE(VAE):
     def __init__(
             self,
             model_config: VAEConfig,
-            encoder: Optional[BaseEncoder],
-            decoder: Optional[BaseDecoder]
+            encoder: Optional[SentenceEncoder],
+            decoder: Optional[SentenceDecoder]
     ):
         super().__init__(model_config=model_config, encoder=encoder, decoder=decoder)
         self.cur_beta: float = 0.0
@@ -315,13 +318,6 @@ class LangVAE(VAE):
             python_version=f"{sys.version_info[0]}.{sys.version_info[1]}"
         )
 
-        self.cur_beta = 0.0
-        self.debug = False
-        self._dbg_counter = 0
-        self._loss_agg = [0.0, 0.0]
-
-        model_dict = {"model_state_dict": deepcopy(self.state_dict())}
-
         if not os.path.exists(dir_path):
             try:
                 os.makedirs(dir_path)
@@ -332,60 +328,43 @@ class LangVAE(VAE):
         env_spec.save_json(dir_path, "environment")
         self.model_config.save_json(dir_path, "model_config")
 
-        # only save .pkl if custom architecture provided
         if not self.model_config.uses_default_encoder:
-            encoder = self.encoder._encoder[0]
-            tokenizer = self.encoder._tokenizer[0]
-            self.encoder._encoder.clear()
-            self.encoder._tokenizer.clear()
-            enc_device = self.encoder.device
-            self.encoder.to("cpu")
-            enc_caching = self.encoder.caching
-            enc_input_cache = self.encoder.cache
-            self.encoder.caching = False
-            self.encoder.cache = dict()
-            with open(os.path.join(dir_path, "encoder.pkl"), "wb") as fp:
-                pickle.dump(self.encoder, fp, pickle.DEFAULT_PROTOCOL)
-            self.encoder._encoder = [encoder]
-            self.encoder._tokenizer = [tokenizer]
-            self.encoder.to(enc_device)
-            self.encoder.cache = enc_input_cache
-            self.encoder.caching = enc_caching
+            torch.save(self.encoder.state_dict(), os.path.join(dir_path, "encoder.pt"))
+            with open(os.path.join(dir_path, "encoder_cfg.json"), "w") as enc_cfg_file:
+                json.dump({"model_path": self.encoder.model_path,
+                           "latent_size": self.encoder.latent_size,
+                           "caching": self.encoder.caching}, enc_cfg_file)
 
         if not self.model_config.uses_default_decoder:
-            decoder = self.decoder._decoder[0]
-            tokenizer = self.decoder._tokenizer[0]
-            self.decoder._decoder.clear()
-            self.decoder._tokenizer.clear()
-            dec_device = self.decoder.device
-            dec_dev_map = self.decoder.dec_hidden_layer_dev_map
-            self.decoder.to("cpu", False)
-            self.decoder.dec_hidden_layer_dev_map = None
-            with open(os.path.join(dir_path, "decoder.pkl"), "wb") as fp:
-                pickle.dump(self.decoder, fp, pickle.DEFAULT_PROTOCOL)
-            self.decoder._decoder = [decoder]
-            self.decoder._tokenizer = [tokenizer]
-            self.decoder.to(dec_device, False)
-            self.decoder.dec_hidden_layer_dev_map = dec_dev_map
-
-        torch.save(model_dict, os.path.join(dir_path, "model.pt"))
+            torch.save(self.decoder.state_dict(), os.path.join(dir_path, "decoder.pt"))
+            with open(os.path.join(dir_path, "decoder_cfg.json"), "w") as dec_cfg_file:
+                cfg = {
+                    "model_path": self.decoder.model_path,
+                    "latent_size": self.decoder.latent_size,
+                    "max_len": self.decoder.max_len,
+                    "device_map": self.decoder.device_map
+                }
+                json.dump(cfg, dec_cfg_file)
 
     @classmethod
-    def _load_custom_encoder_from_folder(cls, dir_path):
+    def _load_custom_encoder_from_folder(cls, dir_path, tokenizer):
 
         file_list = os.listdir(dir_path)
         cls._check_python_version_from_folder(dir_path=dir_path)
 
-        if "encoder.pkl" not in file_list:
+        if "encoder_cfg.json" not in file_list:
             raise FileNotFoundError(
-                f"Missing encoder pkl file ('encoder.pkl') in"
+                f"Missing encoder config file ('encoder_cfg.json') in"
                 f"{dir_path}... This file is needed to rebuild custom encoders."
                 " Cannot perform model building."
             )
 
         else:
-            with open(os.path.join(dir_path, "encoder.pkl"), "rb") as fp:
-                encoder = pickle.load(fp)
+            with open(os.path.join(dir_path, "encoder_cfg.json"), "r") as fp:
+                cfg = json.load(fp)
+            with open(os.path.join(dir_path, "encoder.pt"), "rb") as fp:
+                encoder = SentenceEncoder(**(cfg | {"decoder_tokenizer": tokenizer}))
+                encoder.load_state_dict(torch.load(fp, map_location=torch.device(encoder.device), weights_only=True))
 
             if (not encoder._encoder):
                 encoder.init_pretrained_model()
@@ -399,18 +378,44 @@ class LangVAE(VAE):
         file_list = os.listdir(dir_path)
         cls._check_python_version_from_folder(dir_path=dir_path)
 
-        if "decoder.pkl" not in file_list:
+        if "decoder_cfg.json" not in file_list:
             raise FileNotFoundError(
-                f"Missing decoder pkl file ('decoder.pkl') in"
+                f"Missing decoder config file ('decoder_cfg.json') in"
                 f"{dir_path}... This file is needed to rebuild custom decoders."
                 " Cannot perform model building."
             )
 
         else:
-            with open(os.path.join(dir_path, "decoder.pkl"), "rb") as fp:
-                decoder = pickle.load(fp)
-                if (not decoder._decoder):
-                    decoder.init_pretrained_model()
+            with open(os.path.join(dir_path, "decoder_cfg.json"), "r") as fp:
+                cfg = json.load(fp)
+            with open(os.path.join(dir_path, "decoder.pt"), "rb") as fp:
+                decoder = SentenceDecoder(**cfg)
+                decoder.load_state_dict(torch.load(fp, map_location=torch.device(decoder.device), weights_only=True))
 
         return decoder
 
+    @classmethod
+    def load_from_folder(cls, dir_path):
+        """Class method to be used to load the model from a specific folder
+
+        Args:
+            dir_path (str): The path where the model should have been be saved.
+
+        .. note::
+            This function requires the folder to contain:
+
+            - | a ``model_config.json`` and a ``model.pt`` if no custom architectures were provided
+
+            **or**
+
+            - | a ``model_config.json``, a ``model.pt`` and a ``encoder.pkl`` (resp.
+                ``decoder.pkl``) if a custom encoder (resp. decoder) was provided
+        """
+
+        model_config = cls._load_model_config_from_folder(dir_path)
+        decoder = cls._load_custom_decoder_from_folder(dir_path)
+        encoder = cls._load_custom_encoder_from_folder(dir_path, decoder.tokenizer)
+
+        model = cls(model_config, encoder=encoder, decoder=decoder)
+
+        return model

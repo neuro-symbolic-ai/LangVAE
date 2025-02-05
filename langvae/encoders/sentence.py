@@ -59,6 +59,7 @@ class SentenceEncoder(BaseEncoder):
         """
         BaseEncoder.__init__(self)
         self.model_path = model_path
+        self.latent_size = latent_size
         self.device = device
         self._encoder = []
         self._tokenizer = []

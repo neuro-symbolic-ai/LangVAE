@@ -19,14 +19,14 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODE = "train"
 
 CONFIG = {
-    # "encoder": "bert-base-cased",
-    # "decoder": "gpt2",
-    "encoder": "google/flan-t5-base",
-    "decoder": "meta-llama/Llama-3.2-3B",
+    "encoder": "bert-base-cased",
+    "decoder": "gpt2",
+    # "encoder": "google/flan-t5-base",
+    # "decoder": "meta-llama/Llama-3.2-3B",
     "latent_size": 128,
     "max_sent_len": 32,
-    "ds_prefix": "wn",
-    "annotation": "dsr",
+    "ds_prefix": "eb",
+    "annotation": "srl",
     "num_epochs": 50,
     "batch_size": 10 if (MODE == "dev") else 100,
     "lr": 1e-3,
