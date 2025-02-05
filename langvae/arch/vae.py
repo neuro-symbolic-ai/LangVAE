@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import logging
 import numpy as np
 import pythae.models.base.base_utils
 import torch
@@ -18,9 +19,15 @@ from torch import Tensor
 # from torch.utils.tensorboard import SummaryWriter
 from pythae.models.vae import VAE, VAEConfig
 from pythae.trainers.training_callbacks import TrainingCallback
+from pythae.models.base.base_utils import hf_hub_is_available
 
 from langvae.encoders import SentenceEncoder
 from langvae.decoders import SentenceDecoder
+
+logger = logging.getLogger(__name__)
+console = logging.StreamHandler()
+logger.addHandler(console)
+logger.setLevel(logging.INFO)
 
 model_card_template = """---
 language: en
@@ -415,6 +422,64 @@ class LangVAE(VAE):
         model_config = cls._load_model_config_from_folder(dir_path)
         decoder = cls._load_custom_decoder_from_folder(dir_path)
         encoder = cls._load_custom_encoder_from_folder(dir_path, decoder.tokenizer)
+
+        model = cls(model_config, encoder=encoder, decoder=decoder)
+
+        return model
+
+    @classmethod
+    def load_from_hf_hub(cls, hf_hub_path: str):  # pragma: no cover
+        """Class method to be used to load a pretrained model from the Hugging Face hub
+
+        Args:
+            hf_hub_path (str): The path where the model should have been be saved on the
+                hugginface hub.
+
+        .. note::
+            This function requires the folder to contain:
+
+            - | a ``model_config.json`` and a ``model.pt`` if no custom architectures were provided
+
+            **or**
+
+            - | a ``model_config.json``, a ``model.pt`` and a ``encoder.pkl`` (resp.
+                ``decoder.pkl``) if a custom encoder (resp. decoder) was provided
+        """
+
+        if not hf_hub_is_available():
+            raise ModuleNotFoundError(
+                "`huggingface_hub` package must be installed to load models from the HF hub. "
+                "Run `python -m pip install huggingface_hub` and log in to your account with "
+                "`huggingface-cli login`."
+            )
+
+        else:
+            from huggingface_hub import hf_hub_download
+
+        logger.info(f"Downloading {cls.__name__} files for rebuilding...")
+
+        _ = hf_hub_download(repo_id=hf_hub_path, filename="environment.json")
+        config_path = hf_hub_download(repo_id=hf_hub_path, filename="model_config.json")
+        dir_path = os.path.dirname(config_path)
+
+        model_config = cls._load_model_config_from_folder(dir_path)
+
+        if not model_config.uses_default_decoder:
+            _ = hf_hub_download(repo_id=hf_hub_path, filename="decoder_cfg.json")
+            _ = hf_hub_download(repo_id=hf_hub_path, filename="decoder.pt")
+            decoder = cls._load_custom_decoder_from_folder(dir_path)
+        else:
+            decoder = None
+
+        if not model_config.uses_default_encoder:
+            _ = hf_hub_download(repo_id=hf_hub_path, filename="encoder_cfg.json")
+            _ = hf_hub_download(repo_id=hf_hub_path, filename="encoder.pt")
+            encoder = cls._load_custom_encoder_from_folder(dir_path, decoder.tokenizer)
+        else:
+            encoder = None
+
+
+        logger.info(f"Successfully downloaded {cls.__name__} model!")
 
         model = cls(model_config, encoder=encoder, decoder=decoder)
 

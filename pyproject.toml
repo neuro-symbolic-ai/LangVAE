@@ -1,6 +1,6 @@
 [project]
 name = "langvae"
-version = "0.6.2"
+version = "0.6.3"
 authors = [
   { name="Danilo S. Carvalho", email="danilo.carvalho@manchester.ac.uk" }
 ]
