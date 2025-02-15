@@ -259,7 +259,7 @@ class LangVAE(VAE):
 
         return losses
 
-    def encode_z(self, x: Tensor, c: Dict[str, Tensor] = None) -> Tensor | Tuple[Tensor, Tensor]:
+    def encode_z(self, x: Tensor, c: Dict[str, Tensor] = None) -> Tuple[Tensor, List[Tensor]]:
         """
         Encodes the input tensor into a latent variable tensor.
 
@@ -267,16 +267,16 @@ class LangVAE(VAE):
             x (Tensor): The input tensor to be encoded.
 
         Returns:
-            Tensor: A tensor containing the sampled latent variables.
+            Tuple[Tensor, List[Tensor]]: A tuple of tensors containing the sampled latent variables and conditional
+            variable embeddings if available, respectively.
         """
         encoded = self.encoder(x, c)
         mu, log_var = encoded.embedding, encoded.log_covariance
-        cvars_emb = encoder_output.cvars_embedding
+        cvars_emb = encoded.cvars_embedding
         std = torch.exp(0.5 * log_var)
         z, eps = self._sample_gauss(mu, std)
-        result = z if (not c) else (z, cvars_emb)
 
-        return result
+        return (z, cvars_emb)
 
     def decode_sentences(self, z: Tensor, cvars_emb: List[Tensor] = None) -> List[str]:
         """

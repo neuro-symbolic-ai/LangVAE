@@ -25,11 +25,11 @@ CONFIG = {
     # "decoder": "meta-llama/Llama-3.2-3B",
     "latent_size": 128,
     "max_sent_len": 32,
-    "ds_prefix": "eb",
+    "ds_prefix": "wkt",
     "num_epochs": 50,
-    "batch_size": 10 if (MODE == "dev") else 100,
+    "batch_size": 10 if (MODE == "dev") else 200,
     "lr": 1e-3,
-    "max_beta": 1.0
+    "max_beta": 0.2
 }
 
 torch.set_float32_matmul_precision('high')

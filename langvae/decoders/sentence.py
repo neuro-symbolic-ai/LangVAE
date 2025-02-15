@@ -98,7 +98,7 @@ class SentenceDecoder(BaseDecoder):
             self.dec_hidden_layer_dev_map = {i: self._decoder[0].hf_device_map[f"{dec_hidden_layer_prefix}.{i}"]
                                              for i in range(self.decoder.config.num_hidden_layers)}
         else:
-            self._decoder = [AutoModelForCausalLM.from_pretrained(self.model_path, torch_dtype="auto", **ex_params)]
+            self._decoder = [AutoModelForCausalLM.from_pretrained(self.model_path, torch_dtype="auto")]
             self._decoder = [self.decoder.to(self.device)]
 
         self._decoder[0].eval()

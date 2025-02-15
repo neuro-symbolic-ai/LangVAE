@@ -1,3 +1,4 @@
+import logging
 import torch
 from typing import Dict
 from torch import nn, Tensor
@@ -5,6 +6,9 @@ from xxhash import xxh128_digest
 from transformers import AutoTokenizer, AutoModelForTextEncoding, PreTrainedTokenizer
 from pythae.models.nn import BaseEncoder
 from pythae.models.base.base_utils import ModelOutput
+
+
+logger = logging.getLogger(__name__)
 
 
 def mean_pooling(model_output, attention_mask):
@@ -86,6 +90,10 @@ class SentenceEncoder(BaseEncoder):
     def decoder_tokenizer(self) -> PreTrainedTokenizer:
         return self._decoder_tokenizer[0]
 
+    @property
+    def annotated(self) -> bool:
+        return self._encoder[0].config.hidden_size != self.linear.weight.shape[1]
+
     def to(self, device, include_pretrained: bool = True):
         super().to(device)
         self.device = device
@@ -148,9 +156,14 @@ class SentenceEncoder(BaseEncoder):
         if (x.layout == torch.sparse_coo):
             tok_ids = [x[i].coalesce().indices()[1] for i in range(x.shape[0])]
 
+        uninit = (isinstance(self.linear, nn.LazyLinear) and self.linear.has_uninitialized_params())
+        annotatable = uninit or self.annotated
+        if (c and not annotatable):
+            logger.warning("Passing annotations to a non-annotated model! Annotations will be ignored.")
+
         pooled = self.recode(tok_ids)
         pooled_cvars = list()
-        if (c):
+        if (c and annotatable):
             # pooled_cvars = [self.recode(c[annot].to_dense().argmax(dim=-1)) for annot in c]
             pos = torch.linspace(0.1, 1, x.shape[1]).to(self.device)
             pooled_cvars = [
@@ -158,7 +171,7 @@ class SentenceEncoder(BaseEncoder):
                 for annot in c
             ]
 
-        enc = torch.cat([pooled] + pooled_cvars, dim=-1) if c else pooled
+        enc = torch.cat([pooled] + pooled_cvars, dim=-1) if (c and annotatable) else pooled
         mean, logvar = self.linear(enc).chunk(2, -1)
         output = ModelOutput(
             embedding=mean,

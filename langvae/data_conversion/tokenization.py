@@ -94,7 +94,7 @@ class TokenizedDataSet(Dataset):
         self.max_len = max_len
         self.caching = caching
         self.cache = dict()
-        self.cache_persistence = cache_persistence.replace("/", "__")
+        self.cache_persistence = cache_persistence.replace("/", "__") if cache_persistence else ""
         self.return_tensors = return_tensors
         self.one_hot = one_hot
         self.tokenizer_options = dict() if not tokenizer_options else tokenizer_options

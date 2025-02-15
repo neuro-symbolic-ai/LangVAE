@@ -19,10 +19,10 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODE = "train"
 
 CONFIG = {
-    "encoder": "bert-base-cased",
-    "decoder": "gpt2",
-    # "encoder": "google/flan-t5-base",
-    # "decoder": "meta-llama/Llama-3.2-3B",
+    # "encoder": "bert-base-cased",
+    # "decoder": "gpt2",
+    "encoder": "google/flan-t5-base",
+    "decoder": "meta-llama/Llama-3.2-3B",
     "latent_size": 128,
     "max_sent_len": 32,
     "ds_prefix": "eb",
@@ -48,16 +48,16 @@ def main(config: dict):
         annotations = None
         if ("wkt" in config["ds_prefix"]):
             wkt_dataset = WiktionaryDefinitionCorpus.from_resource("pos+lemma+ctag+dep+dsr")
-            annotations = wkt_dataset.annotations()
+            annotations = wkt_dataset.annotations
             wkt_dataset = [sent for sent in wkt_dataset if not exclude_sentence(sent)]
             dataset = wkt_dataset
         elif ("wn" in config["ds_prefix"]):
             wn_dataset = WordNetFilteredDataSet.from_resource("pos+lemma+ctag+dep+dsr+srl")
-            annotations = wn_dataset.annotations()
+            annotations = wn_dataset.annotations
             dataset = wn_dataset
         elif ("eb" in config["ds_prefix"]):
             eb_dataset = EntailmentBankDataSet.from_resource("pos+lemma+ctag+dep+srl#noproof")
-            annotations = eb_dataset.annotations()
+            annotations = eb_dataset.annotations
             dataset = [
                 sent for sent in eb_dataset
                 if (sent.annotations["type"] == "answer" or sent.annotations["type"].startswith("context"))
