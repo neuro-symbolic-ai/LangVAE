@@ -167,7 +167,7 @@ class SentenceEncoder(BaseEncoder):
             # pooled_cvars = [self.recode(c[annot].to_dense().argmax(dim=-1)) for annot in c]
             pos = torch.linspace(0.1, 1, x.shape[1]).to(self.device)
             pooled_cvars = [
-                ((pos * c[annot].mT).mT.sum(dim=-2) / x.shape[1]).to_dense()
+                ((pos * c[annot].to(self.device).mT).mT.sum(dim=-2) / x.shape[1]).to_dense()
                 for annot in c
             ]
 
