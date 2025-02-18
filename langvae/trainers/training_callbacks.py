@@ -20,7 +20,7 @@ class TensorBoardCallback(TrainingCallback):  # pragma: no cover
     """
 
     def __init__(self, label=""):
-        self._loss_writer = SummaryWriter(comment=label)
+        self._loss_writer = SummaryWriter(comment="::" + label)
         self._counter = 0
 
     def on_log(self, training_config: BaseTrainerConfig, logs, **kwargs):

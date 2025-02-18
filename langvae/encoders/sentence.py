@@ -1,23 +1,41 @@
 import logging
 import torch
+import torch.nn.functional as F
 from typing import Dict
 from torch import nn, Tensor
 from xxhash import xxh128_digest
-from transformers import AutoTokenizer, AutoModelForTextEncoding, PreTrainedTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizer
 from pythae.models.nn import BaseEncoder
 from pythae.models.base.base_utils import ModelOutput
-
+from .automodel_presets import AutoModelPreset, PoolingMethod, AUTOMODEL_MAP
 
 logger = logging.getLogger(__name__)
 
 
-def mean_pooling(model_output, attention_mask):
-    token_embeddings = model_output[0]  # First element of model_output contains all token embeddings
+def mean_pooling(model_output: Tensor, attention_mask: Tensor):
+    token_embeddings = model_output.last_hidden_state
     input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
     sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
     sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
 
     return sum_embeddings / sum_mask
+
+
+def last_token_pooling(model_output: Tensor, attention_mask: Tensor) -> Tensor:
+    token_embeddings = model_output.last_hidden_state
+    left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
+    if left_padding:
+        result = token_embeddings[:, -1]
+    else:
+        sequence_lengths = attention_mask.sum(dim=1) - 1
+        batch_size = token_embeddings.shape[0]
+        result = token_embeddings[torch.arange(batch_size, device=token_embeddings.device), sequence_lengths]
+
+    return result
+
+
+def cls_token_pooling(model_output: Tensor, attention_mask: Tensor) -> Tensor:
+    return model_output.last_hidden_state[:, 0]
 
 
 class SentenceEncoder(BaseEncoder):
@@ -40,6 +58,8 @@ class SentenceEncoder(BaseEncoder):
         linear (nn.Linear): Linear layer to project encoder outputs to latent space.
         tokenizer (AutoTokenizer): Tokenizer corresponding to the encoder model.
         decoder_tokenizer (PreTrainedTokenizer): Tokenizer used for decoding input tokens.
+        caching (bool): Whether the pre-trained encoder embeddings will be cached (in memory) or not.
+        automodel_preset (dict): Predefined settings for encoder models: Automodel loader class, pooling method, normalization.
         device (str): Device on which the model and data are allocated (e.g., 'cpu', 'cuda').
         debug (bool): Flag to enable/disable debugging output.
     """
@@ -48,6 +68,7 @@ class SentenceEncoder(BaseEncoder):
                  latent_size: int,
                  decoder_tokenizer: PreTrainedTokenizer,
                  caching: bool = False,
+                 automodel_preset: dict = None,
                  device: str = "cpu",
                  args=None):  # Args is a ModelConfig instance
         """
@@ -58,6 +79,7 @@ class SentenceEncoder(BaseEncoder):
             latent_size (int): Size of the latent space.
             decoder_tokenizer (PreTrainedTokenizer): Tokenizer for decoding input tensors.
             caching (bool): Activate caching of the pooled pretrained encodings to accelerate processing.
+            automodel_preset (dict): Predefined settings for encoder models: Automodel loader class, pooling method, normalization.
             device (str): Device to allocate model and data (e.g., 'cpu', 'cuda').
             args (ModelConfig, optional): Additional configuration arguments.
         """
@@ -68,10 +90,24 @@ class SentenceEncoder(BaseEncoder):
         self._encoder = []
         self._tokenizer = []
         self._decoder_tokenizer = [decoder_tokenizer]
-        self.init_pretrained_model()
         self.linear = nn.LazyLinear(2 * latent_size, bias=False, device=device)
         self.caching = caching
         self.cache = dict()
+        if (automodel_preset):
+            self.automodel_preset = AutoModelPreset(**automodel_preset)
+        else:
+            if (model_path in AUTOMODEL_MAP):
+                self.automodel_preset = AutoModelPreset(**AUTOMODEL_MAP[model_path])
+            else:
+                self.automodel_preset = AutoModelPreset()
+
+        self.pooling = {
+            PoolingMethod.MEAN: mean_pooling,
+            PoolingMethod.LAST: last_token_pooling,
+            PoolingMethod.CLS: cls_token_pooling
+        }[self.automodel_preset.pooling_method]
+
+        self.init_pretrained_model()
 
         # Logging reencoded inputs
         self._dbg_counter = 0
@@ -101,7 +137,8 @@ class SentenceEncoder(BaseEncoder):
             self._encoder[0].to(device)
 
     def init_pretrained_model(self):
-        self._encoder = [AutoModelForTextEncoding.from_pretrained(self.model_path).to(self.device)]
+        automodel_cls = self.automodel_preset.cls_type
+        self._encoder = [automodel_cls.from_pretrained(self.model_path).to(self.device)]
         self._tokenizer = [AutoTokenizer.from_pretrained(self.model_path)]
         self._encoder[0].eval()
         self._encoder[0].requires_grad_(False)
@@ -126,7 +163,9 @@ class SentenceEncoder(BaseEncoder):
             enc_attn_mask = enc_toks["attention_mask"].to(self.device)
             enc_toks_ids = enc_toks["input_ids"].to(self.device)
             encoded = self.encoder(input_ids=enc_toks_ids, attention_mask=enc_attn_mask)
-            pooled = mean_pooling(encoded, enc_attn_mask).detach()
+            pooled = self.pooling(encoded, enc_attn_mask).detach()
+            if (self.automodel_preset.normalize):
+                pooled = F.normalize(pooled, p=2, dim=1)
 
             if (self.caching):
                 for i in range(len(tok_ids)):

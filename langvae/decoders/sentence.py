@@ -1,14 +1,15 @@
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
-from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedTokenizer, DynamicCache
 from pythae.models.nn import BaseDecoder
 from pythae.models.base.base_utils import ModelOutput
 
 FLASH_ATTN_SUPPORTED = [
     "meta-llama/Meta-Llama-3-8B",
     "meta-llama/Llama-3.2-3B",
-    "mistralai/Mistral-7B-v0.3"
+    "mistralai/Mistral-7B-v0.3",
+    "Qwen/Qwen2.5-3B"
 ]
 
 
@@ -49,7 +50,7 @@ class SentenceDecoder(BaseDecoder):
         self.init_pretrained_model()
 
         dec_ids = torch.unsqueeze(torch.tensor([self.tokenizer.pad_token_id] * 2, dtype=torch.int64, device=self.device), dim=-1)
-        pkv = self.decoder(dec_ids).past_key_values
+        pkv = self.decoder(dec_ids, use_cache=True).past_key_values
         self.pkv_dims = pkv[0][0].shape[1:]
         self.pkv_dtype = pkv[0][0].dtype
 
@@ -107,6 +108,7 @@ class SentenceDecoder(BaseDecoder):
         self._tokenizer = [AutoTokenizer.from_pretrained(self.model_path, padding_side="left", add_prefix_space=True)]
         self._tokenizer[0].pad_token = self.tokenizer.eos_token
         self._tokenizer[0].pad_token_id = self.tokenizer.eos_token_id
+        self._tokenizer[0].bos_token_id = (self._tokenizer[0].bos_token_id or self._decoder[0].config.bos_token_id)
         self.device = self.decoder.device
 
     def forward(self, z: Tensor, max_len: int = 0) -> ModelOutput:
@@ -174,7 +176,8 @@ class SentenceDecoder(BaseDecoder):
             # past_dec = self.compute_kv_residuals(decoded.past_key_values, z, z_repl, dev_map)
             gen_ids = generated[:, max(0, i):i+1, :].argmax(dim=-1)
             # embeds = self.decoder.get_input_embeddings()(gen_ids)  # + ctx_embed
-            decoded = self.decoder(input_ids=gen_ids, past_key_values=past_dec)
+            past_dec = DynamicCache.from_legacy_cache(past_dec)
+            decoded = self.decoder(input_ids=gen_ids, use_cache=True, past_key_values=past_dec)
 
             past_dec = [
                 (

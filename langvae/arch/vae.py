@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from typing import Tuple, List, Dict, Optional
 from copy import deepcopy
+from dataclasses import asdict
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from pythae.trainers import BaseTrainerConfig
@@ -340,6 +341,7 @@ class LangVAE(VAE):
             with open(os.path.join(dir_path, "encoder_cfg.json"), "w") as enc_cfg_file:
                 json.dump({"model_path": self.encoder.model_path,
                            "latent_size": self.encoder.latent_size,
+                           "automodel_preset": asdict(self.encoder.automodel_preset),
                            "caching": self.encoder.caching}, enc_cfg_file)
 
         if not self.model_config.uses_default_decoder:
