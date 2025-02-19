@@ -20,11 +20,11 @@ MODE = "train"
 
 CONFIG = {
     "encoder": "bert-base-cased",
-    # "decoder": "gpt2",
+    "decoder": "gpt2",
     # "encoder": "google/flan-t5-base",
     # "decoder": "meta-llama/Llama-3.2-3B",
     # "encoder": "NovaSearch/stella_en_1.5B_v5",
-    "decoder": "Qwen/Qwen2.5-3B",
+    # "decoder": "Qwen/Qwen2.5-3B",
     "latent_size": 128,
     "max_sent_len": 32,
     "ds_prefix": "eb",
@@ -110,7 +110,7 @@ def main(config: dict):
         scheduler_cls="ReduceLROnPlateau",
         scheduler_params={"patience": 5, "factor": 0.5},
         max_beta=config["max_beta"],
-        n_cycles=1,
+        n_cycles=int(config["num_epochs"] * 0.8),
         target_kl=2.0,
         keep_best_on_train=True
     )

@@ -33,6 +33,7 @@ class SentenceDecoder(BaseDecoder):
     def __init__(self, model_path: str,
                  latent_size: int,
                  max_len: int,
+                 conditional: bool = False,
                  device: torch.device = "cpu",
                  device_map: str = None,
                  args=None):  # Args is a ModelConfig instance
@@ -41,6 +42,7 @@ class SentenceDecoder(BaseDecoder):
         self.latent_size = latent_size
 
         self.max_len = max_len
+        self.conditional = conditional
         self.device_map = device_map if (torch.cuda.is_available() and torch.cuda.device_count() > 1) else None
         self.device = device
         self.dec_hidden_layer_dev_map = None

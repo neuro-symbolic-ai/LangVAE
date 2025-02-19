@@ -2,7 +2,6 @@ from itertools import chain
 from typing import Union
 
 import torch.cuda
-from tqdm import tqdm
 from pythae.models.vae import VAEConfig
 from saf_datasets import WordNetFilteredDataSet, WiktionaryDefinitionCorpus
 from saf_datasets import EntailmentBankDataSet
@@ -12,17 +11,17 @@ from langvae.encoders import SentenceEncoder
 from langvae.decoders import SentenceDecoder
 from langvae.data_conversion.tokenization import TokenizedAnnotatedDataSet
 from langvae.pipelines import LanguageTrainingPipeline
-from langvae.trainers import CyclicalScheduleKLThresholdTrainer, CyclicalScheduleKLThresholdTrainerConfig
+from langvae.trainers import CyclicalScheduleKLThresholdTrainerConfig
 from langvae.trainers.training_callbacks import TensorBoardCallback
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODE = "train"
 
 CONFIG = {
-    # "encoder": "bert-base-cased",
-    # "decoder": "gpt2",
-    "encoder": "google/flan-t5-base",
-    "decoder": "meta-llama/Llama-3.2-3B",
+    "encoder": "bert-base-cased",
+    "decoder": "gpt2",
+    # "encoder": "google/flan-t5-base",
+    # "decoder": "meta-llama/Llama-3.2-3B",
     "latent_size": 128,
     "max_sent_len": 32,
     "ds_prefix": "eb",
@@ -109,7 +108,7 @@ def main(config: dict):
 
     # model.debug = True
 
-    exp_label = f"{ds_prefix}-langcvae-{config['encoder'].replace('/', '__')}-{config['decoder'].replace('/', '__')}-l{latent_size}"
+    exp_label = f"{ds_prefix}-langcevae-{config['encoder'].replace('/', '__')}-{config['decoder'].replace('/', '__')}-l{latent_size}"
 
     training_config = CyclicalScheduleKLThresholdTrainerConfig(
         output_dir=exp_label,
@@ -123,7 +122,7 @@ def main(config: dict):
         scheduler_cls="ReduceLROnPlateau",
         scheduler_params={"patience": 5, "factor": 0.5},
         max_beta=config["max_beta"],
-        n_cycles=1,
+        n_cycles=int(config["num_epochs"] * 0.8),
         target_kl=2.0,
         keep_best_on_train=True
     )

@@ -203,7 +203,7 @@ class LangVAE(VAE):
 
         std = torch.exp(0.5 * log_var)
         z, eps = self._sample_gauss(mu, std)
-        z = torch.cat([z] + cvars_emb, dim=-1) if cvars else z
+        z = torch.cat([z] + cvars_emb, dim=-1) if (cvars and self.decoder.conditional) else z
 
         recon_x = self.decoder(z, max_len=x.shape[1])["reconstruction"]
 
@@ -289,7 +289,7 @@ class LangVAE(VAE):
         Returns:
             List[str]: A list of strings representing the decoded sentences.
         """
-        z = torch.cat([z] + cvars_emb, dim=-1) if cvars_emb else z
+        z = torch.cat([z] + cvars_emb, dim=-1) if (cvars_emb and self.decoder.conditional) else z
         generated = self.decoder(z)["reconstruction"]
         sents = self.decoder.tokenizer.batch_decode(torch.argmax(generated, dim=-1), skip_special_tokens=True)
 
@@ -351,6 +351,7 @@ class LangVAE(VAE):
                     "model_path": self.decoder.model_path,
                     "latent_size": self.decoder.latent_size,
                     "max_len": self.decoder.max_len,
+                    "conditional": self.decoder.conditional,
                     "device_map": self.decoder.device_map
                 }
                 json.dump(cfg, dec_cfg_file)
