@@ -199,6 +199,8 @@ class SentenceEncoder(BaseEncoder):
         annotatable = uninit or self.annotated
         if (c and not annotatable):
             logger.warning("Passing annotations to a non-annotated model! Annotations will be ignored.")
+        if (not c and annotatable):
+            logger.error("Passing non-annotated inputs to an annotated model!")
 
         pooled = self.recode(tok_ids)
         pooled_cvars = list()
