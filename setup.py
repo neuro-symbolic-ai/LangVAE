@@ -16,7 +16,7 @@ def load_requirements() -> list:
 
 setup(
     name='LangVAE',
-    version='0.6.10',
+    version='0.6.11',
     packages=[
         'langvae',
         'langvae.arch',
@@ -31,5 +31,6 @@ setup(
     author='Danilo S. Carvalho',
     author_email='danilo.carvalho@manchester.ac.uk',
     description='LangVAE: Large Language VAEs made simple',
+    python_requires='>=3.11',
     install_requires=load_requirements()
 )

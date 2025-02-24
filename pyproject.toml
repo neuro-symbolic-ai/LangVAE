@@ -1,12 +1,12 @@
 [project]
 name = "langvae"
-version = "0.6.10"
+version = "0.6.11"
 authors = [
   { name="Danilo S. Carvalho", email="danilo.carvalho@manchester.ac.uk" }
 ]
 description = "LangVAE: Large Language VAEs made simple"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
