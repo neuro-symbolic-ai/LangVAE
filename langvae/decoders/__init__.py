@@ -1,2 +1,1 @@
 from .sentence import SentenceDecoder
-from .sentence_annotated import AnnotatedSentenceDecoder
