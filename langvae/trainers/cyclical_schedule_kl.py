@@ -1,5 +1,9 @@
+import os
+import logging
 import torch
+import torch.distributed as dist
 from typing import List, Optional
+from copy import deepcopy
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -9,6 +13,11 @@ from pythae.trainers.training_callbacks import TrainingCallback
 from pythae.data.datasets import BaseDataset
 from langvae.arch.vae import LangVAE
 from langvae.data_conversion.tokenization import collate_sparse_fn
+
+logger = logging.getLogger(__name__)
+console = logging.StreamHandler()
+logger.addHandler(console)
+logger.setLevel(logging.INFO)
 
 
 def frange_cycle_zero_linear(n_iter: int,
@@ -31,6 +40,34 @@ def frange_cycle_zero_linear(n_iter: int,
                 v += step
             i += 1
     return beta_t_list
+
+
+def copy_model_ptref(model: LangVAE) -> LangVAE:
+    pt_encoder = model.encoder._encoder
+    pt_enc_tokenizer = model.encoder._tokenizer
+    pt_decoder = model.decoder._decoder
+    pt_dec_tokenizer = model.decoder._tokenizer
+
+    model.encoder._encoder = None
+    model.encoder._tokenizer = None
+    model.decoder._decoder = None
+    model.decoder._tokenizer = None
+
+    model_copy = deepcopy(model)
+
+    model.encoder._encoder = pt_encoder
+    model.encoder._tokenizer = pt_enc_tokenizer
+    model.decoder._decoder = pt_decoder
+    model.decoder._tokenizer = pt_dec_tokenizer
+
+    model_copy.encoder._encoder = pt_encoder
+    model_copy.encoder._tokenizer = pt_enc_tokenizer
+    model_copy.decoder._decoder = pt_decoder
+    model_copy.decoder._tokenizer = pt_dec_tokenizer
+
+    return model_copy
+
+
 
 @dataclass
 class CyclicalScheduleKLThresholdTrainerConfig(BaseTrainerConfig):
@@ -220,3 +257,145 @@ class CyclicalScheduleKLThresholdTrainer(BaseTrainer):
             sampler=eval_sampler,
             collate_fn=collate_sparse_fn,
         )
+
+    def train(self, log_output_dir: str = None):
+        """This function is the main training function
+
+        Args:
+            log_output_dir (str): The path in which the log will be stored
+        """
+
+        self.prepare_training()
+
+        self.callback_handler.on_train_begin(
+            training_config=self.training_config, model_config=self.model_config
+        )
+
+        log_verbose = False
+
+        msg = (
+            f"Training params:\n - max_epochs: {self.training_config.num_epochs}\n"
+            " - per_device_train_batch_size: "
+            f"{self.training_config.per_device_train_batch_size}\n"
+            " - per_device_eval_batch_size: "
+            f"{self.training_config.per_device_eval_batch_size}\n"
+            f" - checkpoint saving every: {self.training_config.steps_saving}\n"
+            f"Optimizer: {self.optimizer}\n"
+            f"Scheduler: {self.scheduler}\n"
+        )
+
+        if self.is_main_process:
+            logger.info(msg)
+
+        # set up log file
+        if log_output_dir is not None and self.is_main_process:
+            log_verbose = True
+            file_logger = self._get_file_logger(log_output_dir=log_output_dir)
+
+            file_logger.info(msg)
+
+        if self.is_main_process:
+            logger.info("Successfully launched training !\n")
+
+        # set best losses for early stopping
+        best_train_loss = 1e10
+        best_eval_loss = 1e10
+
+        for epoch in range(1, self.training_config.num_epochs + 1):
+
+            self.callback_handler.on_epoch_begin(
+                training_config=self.training_config,
+                epoch=epoch,
+                train_loader=self.train_loader,
+                eval_loader=self.eval_loader,
+            )
+
+            metrics = {}
+
+            epoch_train_loss = self.train_step(epoch)
+            metrics["train_epoch_loss"] = epoch_train_loss
+
+            if self.eval_dataset is not None:
+                epoch_eval_loss = self.eval_step(epoch)
+                metrics["eval_epoch_loss"] = epoch_eval_loss
+                self._schedulers_step(epoch_eval_loss)
+
+            else:
+                epoch_eval_loss = best_eval_loss
+                self._schedulers_step(epoch_train_loss)
+
+            if (
+                epoch_eval_loss < best_eval_loss
+                and not self.training_config.keep_best_on_train
+            ):
+                best_eval_loss = epoch_eval_loss
+                pt_encoder = self.model.encoder._encoder
+                pt_enc_tokenizer = self.model.encoder._tokenizer
+                pt_decoder = self.model.decoder._decoder
+                pt_dec_tokenizer = self.model.decoder._tokenizer
+                self.model.encoder._encoder = None
+                self.model.encoder._tokenizer = None
+                self.model.decoder._decoder = None
+                self.model.decoder._tokenizer = None
+                best_model = copy_model_ptref(self.model)
+                self._best_model = best_model
+
+            elif (
+                epoch_train_loss < best_train_loss
+                and self.training_config.keep_best_on_train
+            ):
+                best_train_loss = epoch_train_loss
+                best_model = copy_model_ptref(self.model)
+                self._best_model = best_model
+
+            if (
+                self.training_config.steps_predict is not None
+                and epoch % self.training_config.steps_predict == 0
+                and self.is_main_process
+            ):
+                true_data, reconstructions, generations = self.predict(best_model)
+
+                self.callback_handler.on_prediction_step(
+                    self.training_config,
+                    true_data=true_data,
+                    reconstructions=reconstructions,
+                    generations=generations,
+                    global_step=epoch,
+                )
+
+            self.callback_handler.on_epoch_end(training_config=self.training_config)
+
+            # save checkpoints
+            if (
+                self.training_config.steps_saving is not None
+                and epoch % self.training_config.steps_saving == 0
+            ):
+                if self.is_main_process:
+                    self.save_checkpoint(
+                        model=best_model, dir_path=self.training_dir, epoch=epoch
+                    )
+                    logger.info(f"Saved checkpoint at epoch {epoch}\n")
+
+                    if log_verbose:
+                        file_logger.info(f"Saved checkpoint at epoch {epoch}\n")
+
+            self.callback_handler.on_log(
+                self.training_config,
+                metrics,
+                logger=logger,
+                global_step=epoch,
+                rank=self.rank,
+            )
+
+        final_dir = os.path.join(self.training_dir, "final_model")
+
+        if self.is_main_process:
+            self.save_model(best_model, dir_path=final_dir)
+
+            logger.info("Training ended!")
+            logger.info(f"Saved final model in {final_dir}")
+
+        if self.distributed:
+            dist.destroy_process_group()
+
+        self.callback_handler.on_train_end(self.training_config)
