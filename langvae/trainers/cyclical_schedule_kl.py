@@ -329,14 +329,6 @@ class CyclicalScheduleKLThresholdTrainer(BaseTrainer):
                 and not self.training_config.keep_best_on_train
             ):
                 best_eval_loss = epoch_eval_loss
-                pt_encoder = self.model.encoder._encoder
-                pt_enc_tokenizer = self.model.encoder._tokenizer
-                pt_decoder = self.model.decoder._decoder
-                pt_dec_tokenizer = self.model.decoder._tokenizer
-                self.model.encoder._encoder = None
-                self.model.encoder._tokenizer = None
-                self.model.decoder._decoder = None
-                self.model.decoder._tokenizer = None
                 best_model = copy_model_ptref(self.model)
                 self._best_model = best_model
 
