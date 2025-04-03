@@ -15,8 +15,8 @@ To use LangVAE, first install it using pip:
 Training an LM-VAE
 ----------------
 
-Here's a basic example of how to train a VAE on text data using LangVAE:
-(or use our example `Colab notebook <https://colab.research.google.com/drive/1CCFvPWsQU2VX41guHGT2-uFgHogAejDv>`_)
+Here's a basic example of how to train a VAE on text data using LangVAE
+(or use our example `Colab notebook <https://colab.research.google.com/drive/1CCFvPWsQU2VX41guHGT2-uFgHogAejDv>`_):
 
 
 .. code-block:: python
