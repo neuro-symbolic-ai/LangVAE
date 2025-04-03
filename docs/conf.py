@@ -10,6 +10,9 @@ project = 'LangVAE'
 copyright = '2025, Danilo S. Carvalho'
 author = 'Danilo S. Carvalho'
 
+release = '0.6'
+version = '0.6.13'
+
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
@@ -21,6 +24,12 @@ extensions = [
     'sphinx.ext.intersphinx',
 ]
 
+intersphinx_mapping = {
+    'python': ('https://docs.python.org/3/', None),
+    'sphinx': ('https://www.sphinx-doc.org/en/master/', None),
+}
+intersphinx_disabled_domains = ['std']
+
 templates_path = ['_templates']
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
@@ -31,3 +40,6 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
 html_theme = 'sphinx_rtd_theme'
 html_static_path = ['_static']
+
+# -- Options for EPUB output
+epub_show_urls = 'footnote'
