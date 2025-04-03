@@ -24,6 +24,7 @@ from pythae.models.base.base_utils import hf_hub_is_available
 
 from langvae.encoders import SentenceEncoder
 from langvae.decoders import SentenceDecoder
+from langvae.data_conversion.sparse import densify_w_padding
 
 logger = logging.getLogger(__name__)
 console = logging.StreamHandler()
@@ -81,14 +82,7 @@ def vae_nll_loss(recon_x: Tensor,
     # recon_x = recon_x[:, :len, :]
 
     if (x.layout == torch.sparse_coo):
-        x = x.coalesce()
-        x_dense = torch.zeros(x.shape, dtype=torch.int64, device=x.device)
-        x_dense[:, :, pad_token_id] = 1
-        nz_idx = x.indices().detach().clone()
-        nz_idx[-1] = pad_token_id
-        x_dense[nz_idx.tolist()] = 0
-        x_dense[x.indices().tolist()] = x.values().long()
-        x_tok_ids = x_dense.argmax(dim=-1)
+        x_tok_ids = densify_w_padding(x, pad_token_id)
         # x_tok_ids = [x[i].coalesce().indices()[1][:len] for i in range(x.shape[0])]
         # x_tok_ids = torch.stack([
         #     torch.cat([tok_ids, torch.tensor([pad_token_id] * int(tok_ids.shape[0] < len) +

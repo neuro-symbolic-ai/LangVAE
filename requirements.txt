@@ -1,6 +1,6 @@
 pythae==0.1.2
 torch>=2.4
-transformers==4.48.0
+transformers>=4.48.0
 jsonlines==4.0.0
 xxhash==3.5.0
 saf-nlp>=0.5.5

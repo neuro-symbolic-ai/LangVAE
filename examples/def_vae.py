@@ -1,5 +1,6 @@
 from itertools import chain
 from typing import Union
+from random import shuffle, seed
 
 import torch.cuda
 from tqdm import tqdm
@@ -16,21 +17,27 @@ from langvae.trainers import CyclicalScheduleKLThresholdTrainer, CyclicalSchedul
 from langvae.trainers.training_callbacks import TensorBoardCallback
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-MODE = "train"
+MODE = "train_chkp"
 
 CONFIG = {
     "encoder": "bert-base-cased",
-    "decoder": "gpt2",
     # "encoder": "google/flan-t5-base",
-    # "decoder": "meta-llama/Llama-3.2-3B",
     # "encoder": "NovaSearch/stella_en_1.5B_v5",
+    # "encoder": "intfloat/e5-large-v2",
+    # "decoder": "gpt2",
+    # "decoder": "meta-llama/Llama-3.2-3B",
+    "decoder": "meta-llama/Llama-3.1-8B",
+    # "decoder": "Qwen/Qwen2.5-1.5B",
     # "decoder": "Qwen/Qwen2.5-3B",
+    # "decoder": "mistralai/Mistral-7B-v0.3",
+    # "decoder": "microsoft/phi-4",
     "latent_size": 128,
     "max_sent_len": 32,
-    "ds_prefix": "eb",
-    "num_epochs": 50,
-    "batch_size": 10 if (MODE == "dev") else 100,
+    "ds_prefix": "wkt_wn_eb",
+    "num_epochs": 20,
+    "batch_size": 10 if (MODE == "dev") else 200,
     "lr": 1e-3,
+    "start_beta": 1.0,
     "max_beta": 1.0
 }
 
@@ -46,16 +53,19 @@ def main(config: dict):
         datasets = [WordNetFilteredDataSet()[:1000],]
     else:
         datasets = list()
+        seed(0)
         if ("wkt" in config["ds_prefix"]):
             wkt_dataset = WiktionaryDefinitionCorpus.from_resource("pos+lemma+ctag+dep+dsr")
             wkt_dataset = [sent for sent in wkt_dataset if not exclude_sentence(sent)]
+            shuffle(wkt_dataset)
             datasets.append(wkt_dataset)
         if ("wn" in config["ds_prefix"]):
             wn_dataset = WordNetFilteredDataSet()
+            shuffle(wn_dataset.data)
             datasets.append(wn_dataset)
         if ("eb" in config["ds_prefix"]):
-            eb_dataset = [sent for sent in EntailmentBankDataSet()
-                          if (sent.annotations["type"] == "answer" or sent.annotations["type"].startswith("context"))]
+            eb_dataset = EntailmentBankDataSet.from_resource("pos+lemma+ctag+dep+srl#expl_only-noreps")
+            shuffle(eb_dataset.data)
             datasets.append(eb_dataset)
 
     # eval_size = int(0.05 * len(dataset))
@@ -87,9 +97,11 @@ def main(config: dict):
 
     if (MODE == "train_chkp"):
         print("Loading checkpoint...")
-        model = LangVAE.load_from_folder("wn-langvae-bert-base-cased-gpt2-l128/VAE_training_2024-12-20_20-21-52/checkpoint_epoch_40")
+        model = LangVAE.load_from_folder("wkt_wn_eb-langvae-bert-base-cased-meta-llama__Llama-3.1-8B-l128/VAE_training_2025-03-30_17-54-15/checkpoint_epoch_20")
         model.encoder.to(DEVICE)
         model.decoder.to(DEVICE)
+        model.encoder.init_pretrained_model()
+        model.decoder.init_pretrained_model()
     else:
         print("Training new model...")
         model = LangVAE(model_config, encoder, decoder)
@@ -104,15 +116,16 @@ def main(config: dict):
         learning_rate=config["lr"],
         per_device_train_batch_size=config["batch_size"],
         per_device_eval_batch_size=config["batch_size"],
-        steps_saving=10,
+        steps_saving=5,
         optimizer_cls="AdamW",
         # optimizer_params={"weight_decay": 0.05, "betas": (0.91, 0.995)},
         scheduler_cls="ReduceLROnPlateau",
         scheduler_params={"patience": 5, "factor": 0.5},
+        start_beta=config["start_beta"],
         max_beta=config["max_beta"],
         n_cycles=int(config["num_epochs"] * 0.8),
         target_kl=2.0,
-        keep_best_on_train=True
+        # keep_best_on_train=True
     )
 
     pipeline = LanguageTrainingPipeline(

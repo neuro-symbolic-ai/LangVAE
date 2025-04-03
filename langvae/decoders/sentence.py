@@ -1,9 +1,11 @@
+import gc
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
 from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedTokenizer, DynamicCache
 from pythae.models.nn import BaseDecoder
 from pythae.models.base.base_utils import ModelOutput
+# from langvae.data_conversion.sparse import densify_w_padding
 
 FLASH_ATTN_SUPPORTED = [
     "meta-llama/Meta-Llama-3-8B",
@@ -106,6 +108,9 @@ class SentenceDecoder(BaseDecoder):
 
         self._decoder[0].eval()
         self._decoder[0].requires_grad_(False)
+        gc.collect()
+        if (torch.cuda.is_available()):
+            torch.cuda.empty_cache()
 
         self._tokenizer = [AutoTokenizer.from_pretrained(self.model_path, padding_side="left", add_prefix_space=True)]
         self._tokenizer[0].pad_token = self.tokenizer.eos_token
@@ -113,13 +118,14 @@ class SentenceDecoder(BaseDecoder):
         self._tokenizer[0].bos_token_id = (self._tokenizer[0].bos_token_id or self._decoder[0].config.bos_token_id)
         self.device = self.decoder.device
 
-    def forward(self, z: Tensor, max_len: int = 0) -> ModelOutput:
+    def forward(self, z: Tensor, max_len: int = 0, x: Tensor = None) -> ModelOutput:
         """
         Processes the input latent tensor through the decoder to generate sentences.
 
         Args:
             z (Tensor): Input tensor containing latent representations.
             max_len (int): Maximum length (tokens) of output sentences.
+            x (Tensor): Input tensor containing original tokens, for teach-forcing training.
 
         Returns:
             ModelOutput: The generated sentences as a ModelOutput object: token probability distribution
@@ -147,6 +153,7 @@ class SentenceDecoder(BaseDecoder):
 
         generated = torch.zeros(z.shape[0], max_len + 1, self.decoder.config.vocab_size, device=self.device, dtype=self.pkv_dtype)
         dec_ids = torch.unsqueeze(torch.tensor([self.tokenizer.bos_token_id] * z.shape[0], dtype=torch.int64, device=self.device), dim=-1)
+        # x_tok_ids = torch.cat([dec_ids, densify_w_padding(x, self.tokenizer.pad_token_id)], dim=1) if (x is not None) else None
         # decoded = self.decoder(input_ids=dec_ids)
         # generated[:, 0, :] = F.softmax(decoded.logits[:, -1, :], dim=-1)
         generated[:, 0,:] += F.one_hot(dec_ids, num_classes=generated.shape[-1]).squeeze()
@@ -176,6 +183,9 @@ class SentenceDecoder(BaseDecoder):
         for i in range(max_len):
             # ctx_embed = context_embeds[:, max(0, i-self.max_look_behind + 1):i+1, :]
             # past_dec = self.compute_kv_residuals(decoded.past_key_values, z, z_repl, dev_map)
+            # if (x_tok_ids is not None):
+            #     gen_ids = x_tok_ids[:, max(0, i):i + 1]
+            # else:
             gen_ids = generated[:, max(0, i):i+1, :].argmax(dim=-1)
             # embeds = self.decoder.get_input_embeddings()(gen_ids)  # + ctx_embed
             past_dec = DynamicCache.from_legacy_cache(past_dec)
@@ -218,3 +228,6 @@ class SentenceDecoder(BaseDecoder):
             reconstruction=generated[:, 1:max_len + 1,:]
         )
         return output
+
+    def generate(self, z: Tensor, max_len: int = 0) -> ModelOutput:
+        return self.forward(z, max_len=max_len)

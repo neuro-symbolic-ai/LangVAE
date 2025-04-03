@@ -19,15 +19,19 @@ MODE = "train"
 
 CONFIG = {
     "encoder": "bert-base-cased",
-    "decoder": "gpt2",
+    # "decoder": "gpt2",
     # "encoder": "google/flan-t5-base",
     # "decoder": "meta-llama/Llama-3.2-3B",
+    # "encoder": "NovaSearch/stella_en_1.5B_v5",
+    # "decoder": "Qwen/Qwen2.5-3B",
+    # "decoder": "mistralai/Mistral-7B-v0.3",
+    "decoder": "microsoft/phi-4",
     "latent_size": 128,
     "max_sent_len": 32,
     "ds_prefix": "eb",
     "annotation": "srl",
     "num_epochs": 50,
-    "batch_size": 10 if (MODE == "dev") else 100,
+    "batch_size": 10 if (MODE == "dev") else 50,
     "lr": 1e-3,
     "max_beta": 1.0
 }
@@ -55,14 +59,11 @@ def main(config: dict):
             annotations = wn_dataset.annotations
             dataset = wn_dataset
         elif ("eb" in config["ds_prefix"]):
-            eb_dataset = EntailmentBankDataSet.from_resource("pos+lemma+ctag+dep+srl#noproof")
+            eb_dataset = EntailmentBankDataSet.from_resource("pos+lemma+ctag+dep+srl#expl_only-noreps")
             annotations = eb_dataset.annotations
-            dataset = [
-                sent for sent in eb_dataset
-                if (sent.annotations["type"] == "answer" or sent.annotations["type"].startswith("context"))
-            ]
+            dataset = eb_dataset
 
-    eval_size = int(0.05 * len(dataset))
+    eval_size = int(0.01 * len(dataset))
 
     annotations = {config["annotation"]: annotations[config["annotation"]]}
     if (config["annotation"] == "srl"):
@@ -77,7 +78,7 @@ def main(config: dict):
     max_sent_len = config["max_sent_len"]
     ds_prefix = config["ds_prefix"]
 
-    decoder = SentenceDecoder(config["decoder"], latent_size, max_sent_len, device=DEVICE, device_map="auto")
+    decoder = SentenceDecoder(config["decoder"], latent_size, max_sent_len, device=DEVICE, device_map="auto", conditional=True)
     # decoder = SentenceDecoder("princeton-nlp/Sheared-LLaMA-2.7B", LATENT_SIZE, MAX_SENT_LEN, device=DEVICE,
     #                           load_in_4bit=True, device_map="auto")
     encoder = SentenceEncoder(config["encoder"], latent_size, decoder.tokenizer, caching=True, device=DEVICE)
@@ -108,7 +109,7 @@ def main(config: dict):
 
     # model.debug = True
 
-    exp_label = f"{ds_prefix}-langcevae-{config['encoder'].replace('/', '__')}-{config['decoder'].replace('/', '__')}-l{latent_size}"
+    exp_label = f"{ds_prefix}-langcvae-{config['encoder'].replace('/', '__')}-{config['decoder'].replace('/', '__')}-l{latent_size}"
 
     training_config = CyclicalScheduleKLThresholdTrainerConfig(
         output_dir=exp_label,

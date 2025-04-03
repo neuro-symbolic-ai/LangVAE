@@ -1,3 +1,4 @@
+import gc
 import logging
 import torch
 import torch.nn.functional as F
@@ -142,6 +143,10 @@ class SentenceEncoder(BaseEncoder):
         self._tokenizer = [AutoTokenizer.from_pretrained(self.model_path)]
         self._encoder[0].eval()
         self._encoder[0].requires_grad_(False)
+        gc.collect()
+        if (torch.cuda.is_available()):
+            torch.cuda.empty_cache()
+
 
     def recode(self, tok_ids: list[Tensor] | Tensor) -> Tensor:
         pooled = None

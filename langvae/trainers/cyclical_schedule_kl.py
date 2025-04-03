@@ -71,6 +71,7 @@ def copy_model_ptref(model: LangVAE) -> LangVAE:
 
 @dataclass
 class CyclicalScheduleKLThresholdTrainerConfig(BaseTrainerConfig):
+    start_beta: float = 0.0
     max_beta: float = 1.0
     n_cycles: int = 1
     target_kl: float = 2.0
@@ -93,7 +94,7 @@ class CyclicalScheduleKLThresholdTrainer(BaseTrainer):
         self.num_batches = len(train_dataset) // training_config.per_device_train_batch_size
         self.num_batches += len(train_dataset) % training_config.per_device_train_batch_size
         n_iter = training_config.num_epochs * self.num_batches
-        self.beta_t_list = frange_cycle_zero_linear(n_iter, start=0.0, stop=training_config.max_beta,
+        self.beta_t_list = frange_cycle_zero_linear(n_iter, start=training_config.start_beta, stop=training_config.max_beta,
                                                     n_cycle=training_config.n_cycles, ratio_increase=0.25, ratio_zero=0.25)
         self.model.target_kl = training_config.target_kl
 
