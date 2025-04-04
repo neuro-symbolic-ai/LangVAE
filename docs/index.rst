@@ -14,6 +14,7 @@ Contents
 --------
 
 .. toctree::
+   :titlesonly:
 
-   usage
+   quick_start
    api
