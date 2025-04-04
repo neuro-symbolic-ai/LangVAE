@@ -140,7 +140,7 @@ neuro-symbolic-ai/<dataset>-langcvae-<encoder>-<decoder>-<annotations>-l<latent 
 where &lt;annotations&gt; is an underscore separated list of annotations included in the input data. For example:
 >neuro-symbolic-ai/eb-langcvae-bert-base-cased-Qwen2.5-3B-srl-l128
 
-Is a model with the same combination as the previous example, but trained with (and expecting) semantic role labels (SRL) as additional inputs, through a TokenizedDataset (see documentation).
+Is a model with the same combination as the previous example, but trained with (and expecting) semantic role labels (SRL) as additional inputs, through a [TokenizedAnnotatedDataset](https://langvae.readthedocs.io/en/latest/langvae/langvae.data_conversion.html#langvae.data_conversion.tokenization.TokenizedAnnotatedDataSet).
 
 
 ## Documentation
