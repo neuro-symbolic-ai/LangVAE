@@ -71,6 +71,16 @@ def copy_model_ptref(model: LangVAE) -> LangVAE:
 
 @dataclass
 class CyclicalScheduleKLThresholdTrainerConfig(BaseTrainerConfig):
+    """
+    Extended training config class for the CyclicalScheduleKLThresholdTrainer
+
+    Attributes:
+        start_beta (float): Initial value of `beta`.
+        max_beta (float): Maximum value of `beta`.
+        n_cycles (int): Total number of cycles for the beta annealing.
+        target_kl (float): Target KL threshold (minimum), after which KL loss is zeroed
+        for any given dimension below the threshold.
+    """
     start_beta: float = 0.0
     max_beta: float = 1.0
     n_cycles: int = 1
@@ -78,6 +88,25 @@ class CyclicalScheduleKLThresholdTrainerConfig(BaseTrainerConfig):
 
 
 class CyclicalScheduleKLThresholdTrainer(BaseTrainer):
+    """Class to perform model training with cyclical schedule KL threshold (beta annealing).
+
+    Args:
+        model (LangVAE): A instance of :class:`~langvae.arch.vae.LangVAE` to train
+
+        train_dataset (BaseDataset): The training dataset of type
+            :class:`~pythae.data.dataset.BaseDataset`
+
+        eval_dataset (BaseDataset): The evaluation dataset of type
+            :class:`~pythae.data.dataset.BaseDataset`
+
+        training_config (CyclicalScheduleKLThresholdTrainerConfig): The training arguments summarizing the main
+            parameters used for training. If None, a basic training instance of
+            :class:`CyclicalScheduleKLThresholdTrainerConfig` is used. Default: None.
+
+        callbacks (List[~pythae.trainers.training_callbacks.TrainingCallbacks]):
+            A list of callbacks to use during training.
+    """
+
     def __init__(
             self,
             model: LangVAE,

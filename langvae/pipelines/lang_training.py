@@ -17,6 +17,26 @@ logger.setLevel(logging.INFO)
 
 
 class LanguageTrainingPipeline(TrainingPipeline):
+    """
+        This Pipeline provides an end to end way to train your LangVAE model.
+        The trained model will be saved in ``output_dir`` stated in the
+        :class:`~pythae.trainers.BaseTrainerConfig`. A folder
+        ``training_YYYY-MM-DD_hh-mm-ss`` is
+        created where checkpoints and final model will be saved. Checkpoints are saved in
+        ``checkpoint_epoch_{epoch}`` folder (optimizer and training config
+        saved as well to resume training if needed)
+        and the final model is saved in a ``final_model`` folder. If ``output_dir`` is
+        None, data is saved in ``dummy_output_dir/training_YYYY-MM-DD_hh-mm-ss`` is created.
+
+        Parameters:
+
+            model (Optional[BaseAE]): An instance of :class:`~pythae.models.BaseAE` you want to train.
+                If None, a default :class:`~pythae.models.VAE` model is used. Default: None.
+
+            training_config (Optional[BaseTrainerConfig]): An instance of
+                :class:`~pythae.trainers.BaseTrainerConfig` stating the training
+                parameters. If None, a default configuration is used.
+        """
     def _check_dataset(self, dataset: BaseDataset):
 
         try:
@@ -138,7 +158,7 @@ class LanguageTrainingPipeline(TrainingPipeline):
             )
 
         elif isinstance(self.training_config, CyclicalScheduleKLThresholdTrainerConfig):
-            logger.info("Using Base Trainer\n")
+            logger.info("Using Cyclical Schedule KL Threshold Trainer\n")
             trainer = CyclicalScheduleKLThresholdTrainer(
                 model=self.model,
                 train_dataset=train_dataset,
