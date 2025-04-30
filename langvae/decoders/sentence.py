@@ -5,13 +5,15 @@ from torch import nn, Tensor
 from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedTokenizer, DynamicCache
 from pythae.models.nn import BaseDecoder
 from pythae.models.base.base_utils import ModelOutput
-# from langvae.data_conversion.sparse import densify_w_padding
+from langvae.data_conversion.sparse import densify_w_padding
 
 FLASH_ATTN_SUPPORTED = [
-    "meta-llama/Meta-Llama-3-8B",
+    "meta-llama/Llama-3.1-8B",
     "meta-llama/Llama-3.2-3B",
     "mistralai/Mistral-7B-v0.3",
-    "Qwen/Qwen2.5-3B"
+    "Qwen/Qwen2.5-3B",
+    "Qwen/Qwen2.5-1.5B",
+    "microsoft/phi-4",
 ]
 
 
@@ -27,6 +29,9 @@ class SentenceDecoder(BaseDecoder):
         model_path (str): Path/locator to the pre-trained language model.
         latent_size (int): Size of the latent space.
         max_len (int): Maximum length (in tokens) of the generated sentences.
+        conditional (bool): Whether the model will use conditional variables to decode.
+        memory_factor (float): Fraction or multiplier of max_len, that will be used as context memory
+                               for KV cache injection.
         device (torch.device): Device on which the model and data are allocated (e.g., 'cpu', 'cuda').
         device_map (str): Device map configuration for model parallelism.
         args (ModelConfig, optional): Additional configuration arguments.
@@ -36,6 +41,8 @@ class SentenceDecoder(BaseDecoder):
                  latent_size: int,
                  max_len: int,
                  conditional: bool = False,
+                 memory_factor: float = 1.0,
+                 teacher_forcing: bool = False,
                  device: torch.device = "cpu",
                  device_map: str = None,
                  args=None):  # Args is a ModelConfig instance
@@ -45,6 +52,8 @@ class SentenceDecoder(BaseDecoder):
 
         self.max_len = max_len
         self.conditional = conditional
+        self.memory_factor = memory_factor
+        self.teacher_forcing = teacher_forcing
         self.device_map = device_map if (torch.cuda.is_available() and torch.cuda.device_count() > 1) else None
         self.device = device
         self.dec_hidden_layer_dev_map = None
@@ -57,10 +66,11 @@ class SentenceDecoder(BaseDecoder):
         pkv = self.decoder(dec_ids, use_cache=True).past_key_values
         self.pkv_dims = pkv[0][0].shape[1:]
         self.pkv_dtype = pkv[0][0].dtype
+        self.context_size = int(self.max_len * self.memory_factor) + 1
 
         self.context_hidden = nn.ModuleList([
             nn.LazyLinear(
-                self.pkv_dims[0] * self.pkv_dims[1] * self.pkv_dims[2] * 2 * (self.max_len + 1), # self.pkv_dims[0] * self.pkv_dims[1] * self.pkv_dims[2] == self.decoder.config.hidden_size
+                self.pkv_dims[0] * self.pkv_dims[1] * self.pkv_dims[2] * 2 * self.context_size, # self.pkv_dims[0] * self.pkv_dims[1] * self.pkv_dims[2] == self.decoder.config.hidden_size
                 dtype=self.pkv_dtype,
                 device=f"cuda:{self.dec_hidden_layer_dev_map[i]}" if self.dec_hidden_layer_dev_map else self.device
             )
@@ -68,6 +78,7 @@ class SentenceDecoder(BaseDecoder):
         ])
 
         self.dropout = nn.Dropout(p=0.1)
+        self.memory_indices = [int((i + 1) * self.memory_factor) for i in range(self.max_len + 1)]
 
         # Logging outputs
         self._dbg_counter = 0
@@ -125,7 +136,7 @@ class SentenceDecoder(BaseDecoder):
         Args:
             z (Tensor): Input tensor containing latent representations.
             max_len (int): Maximum length (tokens) of output sentences.
-            x (Tensor): Input tensor containing original tokens, for teach-forcing training.
+            x (Tensor): Input tensor containing original tokens, for teacher-forcing training.
 
         Returns:
             ModelOutput: The generated sentences as a ModelOutput object: token probability distribution
@@ -153,7 +164,7 @@ class SentenceDecoder(BaseDecoder):
 
         generated = torch.zeros(z.shape[0], max_len + 1, self.decoder.config.vocab_size, device=self.device, dtype=self.pkv_dtype)
         dec_ids = torch.unsqueeze(torch.tensor([self.tokenizer.bos_token_id] * z.shape[0], dtype=torch.int64, device=self.device), dim=-1)
-        # x_tok_ids = torch.cat([dec_ids, densify_w_padding(x, self.tokenizer.pad_token_id)], dim=1) if (x is not None) else None
+        x_tok_ids = torch.cat([dec_ids, densify_w_padding(x, self.tokenizer.pad_token_id)], dim=1) if (x is not None) else None
         # decoded = self.decoder(input_ids=dec_ids)
         # generated[:, 0, :] = F.softmax(decoded.logits[:, -1, :], dim=-1)
         generated[:, 0,:] += F.one_hot(dec_ids, num_classes=generated.shape[-1]).squeeze()
@@ -166,7 +177,7 @@ class SentenceDecoder(BaseDecoder):
             past = tuple([
                 h.view(-1,
                        self.pkv_dims[0],
-                       self.pkv_dims[1] * (self.max_len + 1),
+                       self.pkv_dims[1] * self.context_size,
                        self.pkv_dims[2]).to(f"cuda:{dev_map[layer_idx]}" if dev_map else self.device)
                 for h in self.dropout(self.context_hidden[layer_idx](hidden_state)).chunk(2, dim=-1)
             ])
@@ -180,34 +191,40 @@ class SentenceDecoder(BaseDecoder):
                 past[1][:, :, :1, :]
             )
 
+        prev_inject_idx = 0
         for i in range(max_len):
             # ctx_embed = context_embeds[:, max(0, i-self.max_look_behind + 1):i+1, :]
-            # past_dec = self.compute_kv_residuals(decoded.past_key_values, z, z_repl, dev_map)
-            # if (x_tok_ids is not None):
-            #     gen_ids = x_tok_ids[:, max(0, i):i + 1]
-            # else:
-            gen_ids = generated[:, max(0, i):i+1, :].argmax(dim=-1)
+
+            if (x_tok_ids is not None):
+                gen_ids = x_tok_ids[:, max(0, i):i + 1]
+            else:
+                gen_ids = generated[:, max(0, i):i+1, :].argmax(dim=-1)
             # embeds = self.decoder.get_input_embeddings()(gen_ids)  # + ctx_embed
             past_dec = DynamicCache.from_legacy_cache(past_dec)
             decoded = self.decoder(input_ids=gen_ids, use_cache=True, past_key_values=past_dec)
 
-            past_dec = [
-                (
-                    torch.cat([
-                        decoded.past_key_values[layer_idx][0][:, :, :-2, :],
-                        ctx_mem[layer_idx][0][:, :, i+1:i+2, :],
-                        decoded.past_key_values[layer_idx][0][:, :, -1:, :]
-                    ],
-                    dim=-2),
-                    torch.cat([
-                        decoded.past_key_values[layer_idx][1][:, :, :-2, :],
-                        ctx_mem[layer_idx][1][:, :, i+1:i+2, :],
-                        decoded.past_key_values[layer_idx][1][:, :, -1:, :]
-                    ],
-                    dim=-2),
-                )
-                for layer_idx in range(self.decoder.config.num_hidden_layers)
-            ]
+            if (self.memory_indices[i] != prev_inject_idx):
+                past_dec = [
+                    (
+                        torch.cat([
+                            decoded.past_key_values[layer_idx][0][:, :, :-2, :],
+                            ctx_mem[layer_idx][0][:, :, self.memory_indices[i]:self.memory_indices[i+1], :],
+                            decoded.past_key_values[layer_idx][0][:, :, -1:, :]
+                        ],
+                        dim=-2),
+                        torch.cat([
+                            decoded.past_key_values[layer_idx][1][:, :, :-2, :],
+                            ctx_mem[layer_idx][1][:, :, self.memory_indices[i]:self.memory_indices[i+1], :],
+                            decoded.past_key_values[layer_idx][1][:, :, -1:, :]
+                        ],
+                        dim=-2),
+                    )
+                    for layer_idx in range(self.decoder.config.num_hidden_layers)
+                ]
+            else:
+                past_dec = decoded.past_key_values
+
+            prev_inject_idx = self.memory_indices[i]
 
             generated[:, i+1, :] = F.softmax(decoded.logits[:, -1, :], dim=-1)
 
