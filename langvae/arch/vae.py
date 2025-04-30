@@ -186,6 +186,7 @@ class LangVAE(VAE):
 
         x = inputs["data"]
         x_annot = inputs.keys() - {"data", "input_ids", "attention_mask"}
+        x_teach = x if (self.decoder.teacher_forcing and self.decoder.training) else None
         cvars = None
         if (x_annot):
             cvars = {annot: inputs[annot] for annot in x_annot}
@@ -199,7 +200,7 @@ class LangVAE(VAE):
         z, eps = self._sample_gauss(mu, std)
         z = torch.cat([z] + cvars_emb, dim=-1) if (cvars and self.decoder.conditional) else z
 
-        recon_x = self.decoder(z, max_len=x.shape[1])["reconstruction"]
+        recon_x = self.decoder(z, max_len=x.shape[1], x=x_teach)["reconstruction"]
 
         loss, recon_loss, kld = self.loss_function(recon_x, x, mu, log_var, z)
 
@@ -346,6 +347,8 @@ class LangVAE(VAE):
                     "latent_size": self.decoder.latent_size,
                     "max_len": self.decoder.max_len,
                     "conditional": self.decoder.conditional,
+                    "memory_factor": self.decoder.memory_factor,
+                    "teacher_forcing": self.decoder.teacher_forcing,
                     "device_map": self.decoder.device_map
                 }
                 json.dump(cfg, dec_cfg_file)
