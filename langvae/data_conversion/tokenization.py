@@ -69,7 +69,6 @@ class TokenizedDataSet(Dataset):
         caching (bool): Activate caching of the tokenized inputs to accelerate reads.
         cache_persistence (str): File path for persisting cached inputs, if caching is activated.
         tokenizer_options (dict): Options for the tokenizer.
-        vocab_size (int): Size of the tokenizer vocabulary.
     """
     def __init__(self, source: Union[Iterable[Sentence], List[str]],
                  tokenizer: PreTrainedTokenizer,
@@ -216,7 +215,7 @@ class TokenizedAnnotatedDataSet(TokenizedDataSet):
         source (Union[Iterable[Sentence], Tuple[List[List[str]], List[List[str]]]]): The source data containing annotated sentences.
         tokenizer (PreTrainedTokenizer): The tokenizer used for tokenization.
         max_len (int): The maximum length of the tokenized output.
-        annotations (List[str]): List of annotation types to be processed.
+        annotations (Dict[str, List[str]]): Dictionary of annotation types to be processed and all their possible values.
         caching (bool): Activate caching of the tokenized inputs to accelerate reads.
         cache_persistence (str): File path for persisting cached inputs, if caching is activated.
         tokenizer_options (dict): Options for the tokenizer.
@@ -237,10 +236,9 @@ class TokenizedAnnotatedDataSet(TokenizedDataSet):
             source (Union[Iterable[Sentence], Tuple[List[List[str]], List[List[str]]]]): The source data containing annotated sentences.
             tokenizer (PreTrainedTokenizer): The tokenizer to be used for tokenization.
             max_len (int): The maximum length of the tokenized output.
-            annotations (Dict[str, List[str]]): List of annotation types to be processed.
+            annotations (Dict[str, List[str]]): Dictionary of annotation types to be processed and all their possible values.
             caching (bool): Activate caching of the tokenized inputs to accelerate reads.
             cache_persistence (str): File path for persisting cached inputs, if caching is activated.
-            device (str): The device to which tensors will be sent. Defaults to "cpu".
         """
         super().__init__(source, tokenizer, max_len, caching, cache_persistence,
                          return_tensors, one_hot, tokenizer_options)
