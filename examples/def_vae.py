@@ -1,8 +1,8 @@
+import os
+import torch.cuda
 from itertools import chain
 from typing import Union
 from random import shuffle, seed
-
-import torch.cuda
 from tqdm import tqdm
 from pythae.models.vae import VAEConfig
 from saf_datasets import WordNetFilteredDataSet, WiktionaryDefinitionCorpus
@@ -17,27 +17,30 @@ from langvae.trainers import CyclicalScheduleKLThresholdTrainer, CyclicalSchedul
 from langvae.trainers.training_callbacks import TensorBoardCallback
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-MODE = "train_chkp"
+MODE = "train"
 
 CONFIG = {
     "encoder": "bert-base-cased",
     # "encoder": "google/flan-t5-base",
     # "encoder": "NovaSearch/stella_en_1.5B_v5",
     # "encoder": "intfloat/e5-large-v2",
-    # "decoder": "gpt2",
+    "decoder": "gpt2",
     # "decoder": "meta-llama/Llama-3.2-3B",
-    "decoder": "meta-llama/Llama-3.1-8B",
+    # "decoder": "meta-llama/Llama-3.1-8B",
     # "decoder": "Qwen/Qwen2.5-1.5B",
     # "decoder": "Qwen/Qwen2.5-3B",
     # "decoder": "mistralai/Mistral-7B-v0.3",
     # "decoder": "microsoft/phi-4",
+    # "decoder": "vandijklab/C2S-Scale-Pythia-1b-pt",
     "latent_size": 128,
     "max_sent_len": 32,
-    "ds_prefix": "wkt_wn_eb",
-    "num_epochs": 20,
-    "batch_size": 10 if (MODE == "dev") else 200,
+    "mem_factor": 1.0,
+    "teacher_forcing": False,
+    "ds_prefix": "eb",
+    "num_epochs": 50,
+    "batch_size": 10 if (MODE == "dev") else 50,
     "lr": 1e-3,
-    "start_beta": 1.0,
+    "start_beta": 0.0,
     "max_beta": 1.0
 }
 
@@ -74,7 +77,8 @@ def main(config: dict):
     max_sent_len = config["max_sent_len"]
     ds_prefix = config["ds_prefix"]
 
-    decoder = SentenceDecoder(config["decoder"], latent_size, max_sent_len, device=DEVICE, device_map="auto")
+    decoder = SentenceDecoder(config["decoder"], latent_size, max_sent_len, device=DEVICE, device_map="auto",
+                              memory_factor=config["mem_factor"], teacher_forcing=config["teacher_forcing"])
     # decoder = SentenceDecoder("princeton-nlp/Sheared-LLaMA-2.7B", LATENT_SIZE, MAX_SENT_LEN, device=DEVICE,
     #                           load_in_4bit=True, device_map="auto")
     encoder = SentenceEncoder(config["encoder"], latent_size, decoder.tokenizer, caching=True, device=DEVICE)
@@ -97,7 +101,8 @@ def main(config: dict):
 
     if (MODE == "train_chkp"):
         print("Loading checkpoint...")
-        model = LangVAE.load_from_folder("wkt_wn_eb-langvae-bert-base-cased-meta-llama__Llama-3.1-8B-l128/VAE_training_2025-03-30_17-54-15/checkpoint_epoch_20")
+        checkpoint_dir = "eb-langvae-bert-base-cased-gpt2-l128-m1.0/VAE_training_2025-04-29_15-54-48/final_model"
+        model = LangVAE.load_from_folder(checkpoint_dir)
         model.encoder.to(DEVICE)
         model.decoder.to(DEVICE)
         model.encoder.init_pretrained_model()
@@ -108,7 +113,7 @@ def main(config: dict):
 
     # model.debug = True
 
-    exp_label = f"{ds_prefix}-langvae-{config['encoder'].replace('/', '__')}-{config['decoder'].replace('/', '__')}-l{latent_size}"
+    exp_label = f"{ds_prefix}-langvae-{config['encoder'].replace('/', '__')}-{config['decoder'].replace('/', '__')}-l{latent_size}-m{config['mem_factor']}"
 
     training_config = CyclicalScheduleKLThresholdTrainerConfig(
         output_dir=exp_label,
@@ -116,7 +121,7 @@ def main(config: dict):
         learning_rate=config["lr"],
         per_device_train_batch_size=config["batch_size"],
         per_device_eval_batch_size=config["batch_size"],
-        steps_saving=5,
+        steps_saving=10,
         optimizer_cls="AdamW",
         # optimizer_params={"weight_decay": 0.05, "betas": (0.91, 0.995)},
         scheduler_cls="ReduceLROnPlateau",
@@ -125,13 +130,24 @@ def main(config: dict):
         max_beta=config["max_beta"],
         n_cycles=int(config["num_epochs"] * 0.8),
         target_kl=2.0,
-        # keep_best_on_train=True
+        keep_best_on_train=False
     )
 
     pipeline = LanguageTrainingPipeline(
         training_config=training_config,
         model=model
     )
+
+    # if (MODE == "train_chkp"):
+    #     optimizer_state = torch.load(os.path.join(checkpoint_dir, "optimizer.pt"),
+    #                                  map_location=torch.device(encoder.device),
+    #                                  weights_only = True)
+    #     scheduler_state = torch.load(os.path.join(checkpoint_dir, "scheduler.pt"),
+    #                                  map_location=torch.device(encoder.device),
+    #                                  weights_only=True)
+    #     pipeline.trainer.optimizer.load_state_dict(optimizer_state)
+    #     pipeline.trainer.scheduler.load_state_dict(scheduler_state)
+
 
     exp_params = f"-lr[{config['lr']}]-bsize[{config['batch_size']}]-max_beta[{config['max_beta']}]"
 
