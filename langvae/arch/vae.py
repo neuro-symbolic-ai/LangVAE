@@ -21,10 +21,12 @@ from torch import Tensor
 from pythae.models.vae import VAE, VAEConfig
 from pythae.trainers.training_callbacks import TrainingCallback
 from pythae.models.base.base_utils import hf_hub_is_available
+# from pythae.models.wae_mmd.wae_mmd_model import WAE_MMD
 
 from langvae.encoders import SentenceEncoder
 from langvae.decoders import SentenceDecoder
 from langvae.data_conversion.sparse import densify_w_padding
+from nltk.translate.bleu_score import sentence_bleu
 
 logger = logging.getLogger(__name__)
 console = logging.StreamHandler()
@@ -45,6 +47,63 @@ This model was trained with {clsname}. It can be downloaded or reloaded using th
 >>> model = {clsname}.load_from_hf_hub(hf_hub_path="your_hf_username/repo_name")
 ```
 """
+
+
+def calc_bleu(decoded: dict) -> float:
+    bleu_scores = list()
+
+    for sent in decoded:
+        bleu_scores.append(sentence_bleu([ref.split() for ref in decoded[sent]], sent.split()))
+
+    bleu_scores = [score for score in bleu_scores if (score > 0)]
+
+    return sum(bleu_scores) / (len(bleu_scores) + 1e-8)
+
+
+# def imq_kernel(X: torch.Tensor,
+#                Y: torch.Tensor,
+#                h_dim: int):
+#     batch_size = X.shape[0]
+#     device = X.device
+#
+#     norms_x = X.pow(2).sum(1, keepdim=True)  # batch_size x 1
+#     prods_x = torch.mm(X, X.t())  # batch_size x batch_size
+#     dists_x = norms_x + norms_x.t() - 2 * prods_x
+#
+#     norms_y = Y.pow(2).sum(1, keepdim=True)  # batch_size x 1
+#     prods_y = torch.mm(Y, Y.t())  # batch_size x batch_size
+#     dists_y = norms_y + norms_y.t() - 2 * prods_y
+#
+#     dot_prd = torch.mm(X, Y.t())
+#     dists_c = norms_x + norms_y.t() - 2 * dot_prd
+#
+#     stats = 0
+#     for scale in [.1, .2, .5, 1., 2., 5., 10.]:
+#         C = 2 * h_dim * 1.0 * scale
+#         res1 = C / (C + dists_x)
+#         res1 += C / (C + dists_y)
+#         res1 = (1 - torch.eye(batch_size, device=device)) * res1
+#         res1 = res1.sum() / (batch_size - 1)
+#         res2 = C / (C + dists_c)
+#         res2 = res2.sum() * 2. / (batch_size)
+#         stats += res1 - res2
+#
+#     return stats
+
+# def imq_kernel(z1: Tensor, z2: Tensor, latent_dim: int):
+#     """Returns a matrix of shape [batch x batch] containing the pairwise kernel computation"""
+#
+#     Cbase = (
+#         2.0 * latent_dim
+#     )
+#
+#     k = 0
+#
+#     for scale in [0.1, 0.2, 0.5, 1.0, 2.0, 5, 10.0]:
+#         C = scale * Cbase
+#         k += C / (C + torch.norm(z1.unsqueeze(1) - z2.unsqueeze(0), dim=-1) ** 2)
+#
+#     return k
 
 
 @torch.compile
@@ -96,17 +155,40 @@ def vae_nll_loss(recon_x: Tensor,
         x_tok_ids = x.argmax(dim=-1)
         mask = (x_tok_ids != pad_token_id).to(torch.int8)
 
+    mask = torch.logical_or(mask, mask.roll(1, dims=1)).to(torch.int8)
+
     recon_loss = (F.nll_loss(torch.log(recon_x).view(recon_x.shape[0] * recon_x.shape[1], recon_x.shape[2]),
                              x_tok_ids.view(recon_x.shape[0] * recon_x.shape[1]),
-                             reduction="none").sum(dim=-1) * mask).sum(dim=-1) / x.shape[0]
+                             reduction="none").view(x.shape[:2]) * mask).sum(dim=-1)
 
-    KLD = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp(), dim=-1)
+    KLD = -0.5 * (1 + log_var - mu.pow(2) - log_var.exp())
+    # print("KL_MEAN:", KLD.mean())
     kl_mask = (KLD > target_kl).float()
-    KLD = beta * (kl_mask * KLD)
+    KLD = beta * (kl_mask * KLD).sum(dim=-1)
+
+    # # mu_fake = torch.randn(mu.shape, device=mu.device, dtype=mu.dtype)
+    # # mmd_loss = imq_kernel(mu, mu_fake, h_dim=mu.shape[-1]) / mu.shape[0]
+    #
+    # b_size = z.shape[0]
+    # z_prior = torch.randn_like(z)
+    # k_z = imq_kernel(z, z, z.shape[-1])
+    # k_z_prior = imq_kernel(z_prior, z_prior, z.shape[-1])
+    # k_cross = imq_kernel(z, z_prior, z.shape[-1])
+    # mmd_z = (k_z - k_z.diag().diag()).sum() / ((b_size - 1) * b_size)
+    # mmd_z_prior = (k_z_prior - k_z_prior.diag().diag()).sum() / ((b_size - 1) * b_size)
+    # mmd_cross = k_cross.sum() / (b_size ** 2)
+    #
+    # mmd_loss = mmd_z + mmd_z_prior - 2 * mmd_cross
+
 
     # print(f"recon x: {recon_x.mean(dim=0)}")
     # print(f"recon loss: {recon_loss.mean(dim=0)}, ")
 
+    print("X:", x_tok_ids[:2, :10])
+    print("R:", recon_x.argmax(dim=-1)[:2, :10])
+    # print("MMD Loss:", mmd_loss)
+
+    # return recon_loss.mean(dim=0) + mmd_loss, recon_loss.mean(dim=0), mmd_loss
     return (recon_loss + KLD).mean(dim=0), recon_loss.mean(dim=0), KLD.mean(dim=0)
 
 @torch.jit.script
@@ -191,10 +273,10 @@ class LangVAE(VAE):
         if (x_annot):
             cvars = {annot: inputs[annot] for annot in x_annot}
 
-        encoder_output = self.encoder(x, cvars)
+        encoded = self.encoder(x, cvars)
 
-        mu, log_var = encoder_output.embedding, encoder_output.log_covariance
-        cvars_emb = encoder_output.cvars_embedding
+        mu, log_var = encoded.embedding, encoded.log_covariance
+        cvars_emb = encoded.cvars_embedding
 
         std = torch.exp(0.5 * log_var)
         z, eps = self._sample_gauss(mu, std)
@@ -241,17 +323,18 @@ class LangVAE(VAE):
             losses = vae_nll_loss(recon_x, x, mu, log_var, z, self.decoder.tokenizer.pad_token_id,
                                   self.cur_beta, self.target_kl)
 
-        # Log losses with tensorboard.
-        # self._loss_agg[0] += losses[0].item()
-        # self._loss_agg[1] += losses[2].item()
-        # if (self.debug and self._dbg_counter % 10 == 0):
-        #     # print("\n", [l.item() for l in losses])
-        #     LangVAE.loss_writer.add_scalar("Loss/train_joint", self._loss_agg[0] / 10, self._dbg_counter // 10)
-        #     LangVAE.loss_writer.add_scalar("Loss/train_kld", self._loss_agg[1] / 10, self._dbg_counter // 10)
-        #     LangVAE.loss_writer.flush()
-        #     self._loss_agg[0] = 0.0
-        #     self._loss_agg[1] = 0.0
-        # self._dbg_counter += 1
+
+        generated = recon_x.argmax(dim=-1)
+        for i in range(generated.shape[0]):
+            eos_idx = (generated[i] == self.decoder.tokenizer.pad_token_id).nonzero()
+            if (len(eos_idx) > 0):
+                generated[i, eos_idx[0]:] = self.decoder.tokenizer.pad_token_id
+
+        x_tok_ids = densify_w_padding(x, self.decoder.tokenizer.pad_token_id)
+        orig_sents = self.decoder.tokenizer.batch_decode(x_tok_ids, skip_special_tokens=True)
+        recon_sents = self.decoder.tokenizer.batch_decode(generated, skip_special_tokens=True)
+        decoded = {os: [rs] for os, rs in zip(orig_sents, recon_sents)}
+        print("BLEU:", calc_bleu(decoded))
 
         return losses
 
@@ -286,7 +369,14 @@ class LangVAE(VAE):
         """
         z = torch.cat([z] + cvars_emb, dim=-1) if (cvars_emb and self.decoder.conditional) else z
         generated = self.decoder(z)["reconstruction"]
-        sents = self.decoder.tokenizer.batch_decode(torch.argmax(generated, dim=-1), skip_special_tokens=True)
+
+        # Propagates the first padding token to the rest of the sequence.
+        for i in range(generated.shape[0]):
+            eos_idx = (generated[i] == self.decoder.tokenizer.pad_token_id).nonzero()
+            if (len(eos_idx) > 0):
+                generated[i, eos_idx[0]:] = self.decoder.tokenizer.pad_token_id
+
+        sents = self.decoder.tokenizer.batch_decode(generated.argmax(dim=-1), skip_special_tokens=True)
 
         return sents
 

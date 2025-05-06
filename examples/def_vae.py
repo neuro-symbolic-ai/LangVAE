@@ -15,6 +15,7 @@ from langvae.data_conversion.tokenization import TokenizedDataSet
 from langvae.pipelines import LanguageTrainingPipeline
 from langvae.trainers import CyclicalScheduleKLThresholdTrainer, CyclicalScheduleKLThresholdTrainerConfig
 from langvae.trainers.training_callbacks import TensorBoardCallback
+from langvae.pipelines.evaluation import eval_model
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODE = "train"
@@ -32,16 +33,16 @@ CONFIG = {
     # "decoder": "mistralai/Mistral-7B-v0.3",
     # "decoder": "microsoft/phi-4",
     # "decoder": "vandijklab/C2S-Scale-Pythia-1b-pt",
-    "latent_size": 128,
+    "latent_size": 64,
     "max_sent_len": 32,
     "mem_factor": 1.0,
     "teacher_forcing": False,
-    "ds_prefix": "eb",
-    "num_epochs": 50,
-    "batch_size": 10 if (MODE == "dev") else 50,
+    "ds_prefix": "wn_eb",
+    "num_epochs": 30,
+    "batch_size": 10 if (MODE == "dev") else 200,
     "lr": 1e-3,
     "start_beta": 0.0,
-    "max_beta": 1.0
+    "max_beta": 0.2
 }
 
 torch.set_float32_matmul_precision('high')
@@ -53,7 +54,7 @@ def exclude_sentence(sent: Union[Sentence, str]):
 
 def main(config: dict):
     if (MODE == "dev"):
-        datasets = [WordNetFilteredDataSet()[:1000],]
+        datasets = [EntailmentBankDataSet.from_resource("pos+lemma+ctag+dep+srl#expl_only-noreps")[:1000],]
     else:
         datasets = list()
         seed(0)
@@ -101,7 +102,7 @@ def main(config: dict):
 
     if (MODE == "train_chkp"):
         print("Loading checkpoint...")
-        checkpoint_dir = "eb-langvae-bert-base-cased-gpt2-l128-m1.0/VAE_training_2025-04-29_15-54-48/final_model"
+        checkpoint_dir = "wn_eb-langvae-bert-base-cased-gpt2-l128-m1.0/VAE_training_2025-05-05_16-33-36/final_model"
         model = LangVAE.load_from_folder(checkpoint_dir)
         model.encoder.to(DEVICE)
         model.decoder.to(DEVICE)
@@ -129,8 +130,8 @@ def main(config: dict):
         start_beta=config["start_beta"],
         max_beta=config["max_beta"],
         n_cycles=int(config["num_epochs"] * 0.8),
-        target_kl=2.0,
-        keep_best_on_train=False
+        target_kl=1.0,
+        keep_best_on_train=True
     )
 
     pipeline = LanguageTrainingPipeline(
