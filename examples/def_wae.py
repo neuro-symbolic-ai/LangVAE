@@ -25,8 +25,8 @@ CONFIG = {
     # "encoder": "google/flan-t5-base",
     # "encoder": "NovaSearch/stella_en_1.5B_v5",
     # "encoder": "intfloat/e5-large-v2",
-    # "decoder": "gpt2",
-    "decoder": "meta-llama/Llama-3.2-3B",
+    "decoder": "gpt2",
+    # "decoder": "meta-llama/Llama-3.2-3B",
     # "decoder": "meta-llama/Llama-3.1-8B",
     # "decoder": "Qwen/Qwen2.5-1.5B",
     # "decoder": "Qwen/Qwen2.5-3B",
@@ -42,7 +42,8 @@ CONFIG = {
     "batch_size": 10 if (MODE == "dev") else 200,
     "lr": 1e-3,
     "start_beta": 0.0,
-    "max_beta": 0.2
+    "max_beta": 0.2,
+    "reg_weight": 100
 }
 
 torch.set_float32_matmul_precision('high')
@@ -96,7 +97,8 @@ def main(config: dict):
     decoder.debug = True
 
     model_config = WAE_MMD_Config(
-        latent_dim=latent_size
+        latent_dim=latent_size,
+        reg_weight=config["reg_weight"]
     )
 
     if (MODE == "train_chkp"):

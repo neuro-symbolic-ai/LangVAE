@@ -283,7 +283,7 @@ class LangWAE(WAE_MMD):
         decoded = {os: [rs] for os, rs in zip(orig_sents, recon_sents)}
         print("BLEU:", calc_bleu(decoded))
 
-        return recon_loss + mmd_loss, recon_loss, mmd_loss
+        return recon_loss + mmd_loss * self.model_config.reg_weight, recon_loss, mmd_loss
 
     def encode_z(self, x: Tensor, c: Dict[str, Tensor] = None) -> Tuple[Tensor, List[Tensor]]:
         """
