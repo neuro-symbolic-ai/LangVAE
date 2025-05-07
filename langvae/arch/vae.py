@@ -60,52 +60,6 @@ def calc_bleu(decoded: dict) -> float:
     return sum(bleu_scores) / (len(bleu_scores) + 1e-8)
 
 
-# def imq_kernel(X: torch.Tensor,
-#                Y: torch.Tensor,
-#                h_dim: int):
-#     batch_size = X.shape[0]
-#     device = X.device
-#
-#     norms_x = X.pow(2).sum(1, keepdim=True)  # batch_size x 1
-#     prods_x = torch.mm(X, X.t())  # batch_size x batch_size
-#     dists_x = norms_x + norms_x.t() - 2 * prods_x
-#
-#     norms_y = Y.pow(2).sum(1, keepdim=True)  # batch_size x 1
-#     prods_y = torch.mm(Y, Y.t())  # batch_size x batch_size
-#     dists_y = norms_y + norms_y.t() - 2 * prods_y
-#
-#     dot_prd = torch.mm(X, Y.t())
-#     dists_c = norms_x + norms_y.t() - 2 * dot_prd
-#
-#     stats = 0
-#     for scale in [.1, .2, .5, 1., 2., 5., 10.]:
-#         C = 2 * h_dim * 1.0 * scale
-#         res1 = C / (C + dists_x)
-#         res1 += C / (C + dists_y)
-#         res1 = (1 - torch.eye(batch_size, device=device)) * res1
-#         res1 = res1.sum() / (batch_size - 1)
-#         res2 = C / (C + dists_c)
-#         res2 = res2.sum() * 2. / (batch_size)
-#         stats += res1 - res2
-#
-#     return stats
-
-# def imq_kernel(z1: Tensor, z2: Tensor, latent_dim: int):
-#     """Returns a matrix of shape [batch x batch] containing the pairwise kernel computation"""
-#
-#     Cbase = (
-#         2.0 * latent_dim
-#     )
-#
-#     k = 0
-#
-#     for scale in [0.1, 0.2, 0.5, 1.0, 2.0, 5, 10.0]:
-#         C = scale * Cbase
-#         k += C / (C + torch.norm(z1.unsqueeze(1) - z2.unsqueeze(0), dim=-1) ** 2)
-#
-#     return k
-
-
 @torch.compile
 def vae_nll_loss(recon_x: Tensor,
                  x: Tensor,
@@ -162,31 +116,15 @@ def vae_nll_loss(recon_x: Tensor,
                              reduction="none").view(x.shape[:2]) * mask).sum(dim=-1)
 
     KLD = -0.5 * (1 + log_var - mu.pow(2) - log_var.exp())
-    # print("KL_MEAN:", KLD.mean())
+    print("KL_MEAN:", KLD.mean())
     kl_mask = (KLD > target_kl).float()
     KLD = beta * (kl_mask * KLD).sum(dim=-1)
-
-    # # mu_fake = torch.randn(mu.shape, device=mu.device, dtype=mu.dtype)
-    # # mmd_loss = imq_kernel(mu, mu_fake, h_dim=mu.shape[-1]) / mu.shape[0]
-    #
-    # b_size = z.shape[0]
-    # z_prior = torch.randn_like(z)
-    # k_z = imq_kernel(z, z, z.shape[-1])
-    # k_z_prior = imq_kernel(z_prior, z_prior, z.shape[-1])
-    # k_cross = imq_kernel(z, z_prior, z.shape[-1])
-    # mmd_z = (k_z - k_z.diag().diag()).sum() / ((b_size - 1) * b_size)
-    # mmd_z_prior = (k_z_prior - k_z_prior.diag().diag()).sum() / ((b_size - 1) * b_size)
-    # mmd_cross = k_cross.sum() / (b_size ** 2)
-    #
-    # mmd_loss = mmd_z + mmd_z_prior - 2 * mmd_cross
-
 
     # print(f"recon x: {recon_x.mean(dim=0)}")
     # print(f"recon loss: {recon_loss.mean(dim=0)}, ")
 
     print("X:", x_tok_ids[:2, :10])
     print("R:", recon_x.argmax(dim=-1)[:2, :10])
-    # print("MMD Loss:", mmd_loss)
 
     # return recon_loss.mean(dim=0) + mmd_loss, recon_loss.mean(dim=0), mmd_loss
     return (recon_loss + KLD).mean(dim=0), recon_loss.mean(dim=0), KLD.mean(dim=0)
@@ -222,7 +160,6 @@ def vae_nll_loss_supervised(recon_x: Tensor,
     KLD = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp(), dim=-1)
     kl_mask = (KLD > target_kl).float()
     KLD = beta * (kl_mask * KLD)
-
 
     return (recon_loss + KLD).mean(dim=0), recon_loss.mean(dim=0), KLD.mean(dim=0)
 

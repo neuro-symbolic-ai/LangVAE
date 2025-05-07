@@ -6,7 +6,7 @@ from random import shuffle, seed
 from tqdm import tqdm
 from pythae.models.vae import VAEConfig
 from saf_datasets import WordNetFilteredDataSet, WiktionaryDefinitionCorpus
-from saf_datasets import EntailmentBankDataSet
+from saf_datasets import EntailmentBankDataSet, AllNLIDataSet, STSBDataSet
 from saf import Sentence
 from langvae import LangVAE
 from langvae.encoders import SentenceEncoder
@@ -33,16 +33,17 @@ CONFIG = {
     # "decoder": "mistralai/Mistral-7B-v0.3",
     # "decoder": "microsoft/phi-4",
     # "decoder": "vandijklab/C2S-Scale-Pythia-1b-pt",
-    "latent_size": 64,
+    "latent_size": 128,
     "max_sent_len": 32,
     "mem_factor": 1.0,
-    "teacher_forcing": False,
-    "ds_prefix": "wn_eb",
-    "num_epochs": 30,
+    "teacher_forcing": True,
+    "ds_prefix": "wkt_wn_anli_stsb_eb",
+    "num_epochs": 10,
     "batch_size": 10 if (MODE == "dev") else 200,
     "lr": 1e-3,
-    "start_beta": 0.0,
-    "max_beta": 0.2
+    "start_beta": 0.1,
+    "max_beta": 0.1,
+    "target_kl": 0.1
 }
 
 torch.set_float32_matmul_precision('high')
@@ -71,6 +72,14 @@ def main(config: dict):
             eb_dataset = EntailmentBankDataSet.from_resource("pos+lemma+ctag+dep+srl#expl_only-noreps")
             shuffle(eb_dataset.data)
             datasets.append(eb_dataset)
+        if ("anli" in config["ds_prefix"]):
+            anli_dataset = [sent for sent in AllNLIDataSet() if (sent.annotations["split"] == "train")]
+            shuffle(anli_dataset.data)
+            datasets.append(anli_dataset)
+        if ("stsb" in config["ds_prefix"]):
+            stsb_dataset = [sent for sent in STSBDataSet() if (sent.annotations["split"] == "train")]
+            shuffle(stsb_dataset.data)
+            datasets.append(stsb_dataset)
 
     # eval_size = int(0.05 * len(dataset))
     eval_size = [int(0.01 * len(ds)) for ds in datasets]
@@ -130,7 +139,7 @@ def main(config: dict):
         start_beta=config["start_beta"],
         max_beta=config["max_beta"],
         n_cycles=int(config["num_epochs"] * 0.8),
-        target_kl=1.0,
+        target_kl=config["target_kl"],
         keep_best_on_train=True
     )
 
