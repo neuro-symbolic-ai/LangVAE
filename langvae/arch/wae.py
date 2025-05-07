@@ -10,16 +10,11 @@ from typing import Tuple, List, Dict, Optional
 from copy import deepcopy
 from dataclasses import asdict
 
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from pythae.trainers import BaseTrainerConfig
-# from pythae.models.nn import BaseEncoder, BaseDecoder
-from pythae.models.base.base_config import BaseAEConfig, EnvironmentConfig
+from pythae.models.base.base_config import EnvironmentConfig
 from pythae.models.base.base_utils import ModelOutput
 from pythae.data.datasets import BaseDataset
 from torch import Tensor
-# from torch.utils.tensorboard import SummaryWriter
-from pythae.models.vae import VAE, VAEConfig
-from pythae.trainers.training_callbacks import TrainingCallback
+from pythae.models.wae_mmd import WAE_MMD, WAE_MMD_Config
 from pythae.models.base.base_utils import hf_hub_is_available
 
 from langvae.encoders import SentenceEncoder
@@ -106,38 +101,26 @@ def calc_bleu(decoded: dict) -> float:
 
 
 @torch.compile
-def vae_nll_loss(recon_x: Tensor,
-                 x: Tensor,
-                 mu: Tensor,
-                 log_var: Tensor,
-                 z: Tensor,
-                 pad_token_id: int,
-                 beta: float,
-                 target_kl: float) -> Tuple[Tensor, Tensor, Tensor]:
+def vae_nll_loss(recon_x: Tensor, x: Tensor, pad_token_id: int) -> Tensor:
     """
-        Calculates the negative log-likelihood (NLL) loss for a Variational Autoencoder (VAE).
+    Calculates the negative log-likelihood (NLL) loss for an LM Autoencoder (AE).
 
-        Args:
-            recon_x (Tensor): The reconstructed input tensor.
-            x (Tensor): The original input tensor.
-            mu (Tensor): The mean of the latent variable distribution.
-            log_var (Tensor): The logarithm of the variance of the latent variable distribution.
-            z (Tensor): The latent variable tensor.
-            pad_token_id (int): The padding token ID for the input sequence.
-            beta (float): A hyperparameter that controls the trade-off between reconstruction loss and KL divergence.
-            target_kl (float): A target value for the KL divergence (cut-off).
+    Args:
+        recon_x (Tensor): The reconstructed input tensor.
+        x (Tensor): The original input tensor.
+        mu (Tensor): The mean of the latent variable distribution.
+        log_var (Tensor): The logarithm of the variance of the latent variable distribution.
+        z (Tensor): The latent variable tensor.
+        pad_token_id (int): The padding token ID for the input sequence.
+        beta (float): A hyperparameter that controls the trade-off between reconstruction loss and KL divergence.
+        target_kl (float): A target value for the KL divergence (cut-off).
 
-        Returns:
-            Tuple[Tensor, Tensor, Tensor]:
-                - Total NLL loss (reconstruction loss + KL divergence).
-                - Average reconstruction loss.
-                - Average KL divergence.
-        """
-    # x = torch.squeeze(x).to(recon_x.device)
-
-    # len = min(x.shape[1], recon_x.shape[1])
-    # # print(f"X [{x.shape[1]}], X' [{recon_x.shape[1]}]")
-    # recon_x = recon_x[:, :len, :]
+    Returns:
+        Tuple[Tensor, Tensor, Tensor]:
+            - Total NLL loss (reconstruction loss + KL divergence).
+            - Average reconstruction loss.
+            - Average KL divergence.
+    """
 
     if (x.layout == torch.sparse_coo):
         x_tok_ids = densify_w_padding(x, pad_token_id)
@@ -160,62 +143,21 @@ def vae_nll_loss(recon_x: Tensor,
                              x_tok_ids.view(recon_x.shape[0] * recon_x.shape[1]),
                              reduction="none").view(x.shape[:2]) * mask).sum(dim=-1)
 
-    KLD = -0.5 * (1 + log_var - mu.pow(2) - log_var.exp())
-    # print("KL_MEAN:", KLD.mean())
-    kl_mask = (KLD > target_kl).float()
-    KLD = beta * (kl_mask * KLD).sum(dim=-1)
-
-
     # print(f"recon x: {recon_x.mean(dim=0)}")
     # print(f"recon loss: {recon_loss.mean(dim=0)}, ")
 
     print("X:", x_tok_ids[:2, :10])
     print("R:", recon_x.argmax(dim=-1)[:2, :10])
 
-    return (recon_loss + KLD).mean(dim=0), recon_loss.mean(dim=0), KLD.mean(dim=0)
-
-@torch.jit.script
-def vae_nll_loss_supervised(recon_x: Tensor,
-                            x: Tensor,
-                            mu: Tensor,
-                            log_var: Tensor,
-                            z: Tensor,
-                            pad_token_id: int,
-                            beta: float,
-                            target_kl: float,
-                            num_annotations: int) -> Tuple[Tensor, Tensor, Tensor]:
-    x = torch.squeeze(x).to(recon_x.device)
-    x_split = x.chunk(num_annotations + 1, dim=-1)
-    recon_x_split = recon_x.chunk(num_annotations + 1, dim=-1)
-    x_tok_ids = torch.argmax(x_split[0], dim=-1)
-    mask = (x_tok_ids != pad_token_id).to(torch.int8)
-    rec_x = recon_x_split[0]
-
-    recon_loss = (F.nll_loss(torch.log(rec_x).view(rec_x.shape[0] * rec_x.shape[1], rec_x.shape[2]),
-                             x_tok_ids.view(rec_x.shape[0] * rec_x.shape[1]),
-                             reduction="none").sum(dim=-1) * mask).sum(dim=-1) / x_split[0].shape[0]
-
-    for lbl_split, rec_lbl in zip(x_split[1:], recon_x_split[1:]):
-        x_lbl_ids = torch.argmax(lbl_split, dim=-1)
-        mask = (x_lbl_ids != pad_token_id).to(torch.int8)
-        recon_loss += (F.nll_loss(torch.log(rec_lbl).view(rec_lbl.shape[0] * rec_lbl.shape[1], rec_lbl.shape[2]),
-                                  x_lbl_ids.view(rec_lbl.shape[0] * rec_lbl.shape[1]),
-                                  reduction="none").sum(dim=-1) * mask).sum(dim=-1) / lbl_split.shape[0]
-
-    KLD = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp(), dim=-1)
-    kl_mask = (KLD > target_kl).float()
-    KLD = beta * (kl_mask * KLD)
+    return recon_loss.mean(dim=0)
 
 
-    return (recon_loss + KLD).mean(dim=0), recon_loss.mean(dim=0), KLD.mean(dim=0)
-
-
-class LangVAE(VAE):
+class LangWAE(WAE_MMD):
     """
-    A language-oriented Variational Autoencoder (VAE) that can be used for text generation.
+    A language-oriented Wasserstein Autoencoder (WAE) that can be used for text generation.
 
     Args:
-        model_config (VAEConfig): The configuration of the VAE model.
+        model_config (WAE_MMD_Config): The configuration of the VAE model.
         encoder (Optional[SentenceEncoder]): Language encoder model that processes input data and returns sentence embeddings.
         decoder (Optional[SentenceDecoder]): Language decoder model that generates text from latent representations.
     """
@@ -224,18 +166,23 @@ class LangVAE(VAE):
 
     def __init__(
             self,
-            model_config: VAEConfig,
+            model_config: WAE_MMD_Config,
             encoder: Optional[SentenceEncoder],
             decoder: Optional[SentenceDecoder]
     ):
         super().__init__(model_config=model_config, encoder=encoder, decoder=decoder)
-        self.cur_beta: float = 0.0
-        self.target_kl = 1.0
 
         # Logging losses
         self.debug = False
         self._dbg_counter = 0
         self._loss_agg = [0.0, 0.0]
+
+    @staticmethod
+    def _sample_gauss(mu, std):
+        # Reparametrization trick
+        # Sample N(0, I)
+        eps = torch.randn_like(std)
+        return mu + eps * std, eps
 
     def forward(self, inputs: BaseDataset, **kwargs):
         """
@@ -262,16 +209,16 @@ class LangVAE(VAE):
         cvars_emb = encoded.cvars_embedding
 
         std = torch.exp(0.5 * log_var)
-        z, eps = self._sample_gauss(mu, std)
+        z, eps = LangWAE._sample_gauss(mu, std)
         z = torch.cat([z] + cvars_emb, dim=-1) if (cvars and self.decoder.conditional) else z
 
         recon_x = self.decoder(z, max_len=x.shape[1], x=x_teach)["reconstruction"]
 
-        loss, recon_loss, kld = self.loss_function(recon_x, x, mu, log_var, z)
+        loss, recon_loss, mmd_loss = self.loss_function(recon_x, x, z)
 
         output = ModelOutput(
             recon_loss=recon_loss,
-            reg_loss=kld,
+            mmd_loss=mmd_loss,
             loss=loss,
             recon_x=recon_x,
             z=z,
@@ -279,7 +226,30 @@ class LangVAE(VAE):
 
         return output
 
-    def loss_function(self, recon_x, x, mu, log_var, z) -> Tuple[Tensor, Tensor, Tensor]:
+    @torch.compile
+    def mmd_loss(self, z: Tensor) -> Tensor:
+        N = z.shape[0]  # batch size
+        z_prior = torch.randn_like(z)
+
+        if self.kernel_choice == "rbf":
+            k_z = self.rbf_kernel(z, z)
+            k_z_prior = self.rbf_kernel(z_prior, z_prior)
+            k_cross = self.rbf_kernel(z, z_prior)
+
+        else:
+            k_z = self.imq_kernel(z, z)
+            k_z_prior = self.imq_kernel(z_prior, z_prior)
+            k_cross = self.imq_kernel(z, z_prior)
+
+        mmd_z = (k_z - k_z.diag().diag()).sum() / ((N - 1) * N)
+        mmd_z_prior = (k_z_prior - k_z_prior.diag().diag()).sum() / ((N - 1) * N)
+        mmd_cross = k_cross.sum() / (N ** 2)
+
+        mmd_loss = mmd_z + mmd_z_prior - 2 * mmd_cross
+
+        return mmd_loss
+
+    def loss_function(self, recon_x, x, z) -> Tuple[Tensor, Tensor, Tensor]:
         """
         Computes the loss function for the VAE model.
 
@@ -294,17 +264,11 @@ class LangVAE(VAE):
             Tuple[Tensor, Tensor, Tensor]: A tuple containing the reconstruction loss, the KL divergence
                 loss, and the total loss.
         """
-        mu = mu.to(recon_x.device)
-        log_var = log_var.to(recon_x.device)
         recon_x.clamp_min_(torch.finfo(recon_x.dtype).tiny * 10)  # Prevents underflow
 
-        if (recon_x.shape[-1] > self.decoder.decoder.config.vocab_size):
-            num_annotations = recon_x.shape[-1] // self.decoder.decoder.config.vocab_size - 1
-            losses = vae_nll_loss_supervised(recon_x, x, mu, log_var, z, self.decoder.tokenizer.pad_token_id,
-                                             self.cur_beta, self.target_kl, num_annotations)
-        else:
-            losses = vae_nll_loss(recon_x, x, mu, log_var, z, self.decoder.tokenizer.pad_token_id,
-                                  self.cur_beta, self.target_kl)
+        recon_loss = vae_nll_loss(recon_x, x, self.decoder.tokenizer.pad_token_id)
+        mmd_loss = self.mmd_loss(z)
+        print("MMD Loss:", mmd_loss)
 
 
         generated = recon_x.argmax(dim=-1)
@@ -319,7 +283,7 @@ class LangVAE(VAE):
         decoded = {os: [rs] for os, rs in zip(orig_sents, recon_sents)}
         print("BLEU:", calc_bleu(decoded))
 
-        return losses
+        return recon_loss + mmd_loss, recon_loss, mmd_loss
 
     def encode_z(self, x: Tensor, c: Dict[str, Tensor] = None) -> Tuple[Tensor, List[Tensor]]:
         """
