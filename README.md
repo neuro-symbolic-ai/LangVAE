@@ -159,13 +159,15 @@ If you find this work useful or use it in your research, please consider citing 
 
 ```bibtex
 @inproceedings{carvalho2025langvae,
- author = {Carvalho, Danilo Silva and Zhang, Yingji and Unsworth, Harriet and Freitas, Andre},
- booktitle = {ArXiv},
- editor = {},
- pages = {0--0},
- publisher = {ArXiv},
  title = {LangVAE and LangSpace: Building and Probing for Language Model VAEs},
- volume = {0},
+ author = {Carvalho, Danilo Silva and Zhang, Yingji and Unsworth, Harriet and Freitas, Andre},
+ booktitle = {Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing: System Demonstrations},
+ editor = {Habernal, Ivan and Schulam, Peter and Tiedemann, J{\"o}rg},
+ pages = {749--759},
+ publisher = {Association for Computational Linguistics},
+ url = {https://aclanthology.org/2025.emnlp-demos.57/},
+ doi = {10.18653/v1/2025.emnlp-demos.57},
+ ISBN = {979-8-89176-334-0},
  year = {2025}
 }
 ```
