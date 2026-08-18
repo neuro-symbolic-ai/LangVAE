@@ -1,0 +1,30 @@
+[
+  "neuro-symbolic-ai/eb-langvae-bert-base-cased-gpt2-l128",
+  "neuro-symbolic-ai/eb-langcvae-bert-base-cased-gpt2-srl-l128",
+  "neuro-symbolic-ai/eb-langvae-bert-base-cased-Qwen2.5-3B-l128",
+  "neuro-symbolic-ai/eb-langcvae-bert-base-cased-Qwen2.5-3B-srl-l128",
+  "neuro-symbolic-ai/eb-langvae-bert-base-cased-Llama-3.2-3B-l128",
+  "neuro-symbolic-ai/eb-langcvae-bert-base-cased-Llama-3.2-3B-srl-l128",
+  "neuro-symbolic-ai/eb-langvae-bert-base-cased-Mistral-7B-v0.3-l128",
+  "neuro-symbolic-ai/eb-langcvae-bert-base-cased-Mistral-7B-v0.3-srl-l128",
+  "neuro-symbolic-ai/eb-langvae-bert-base-cased-phi-4-l128",
+  "neuro-symbolic-ai/eb-langcvae-bert-base-cased-phi-4-srl-l128",
+
+  "neuro-symbolic-ai/eb-langvae-flan-t5-base-gpt2-l128",
+  "neuro-symbolic-ai/eb-langcvae-flan-t5-base-gpt2-srl-l128",
+  "neuro-symbolic-ai/eb-langvae-flan-t5-base-Qwen2.5-3B-l128",
+  "neuro-symbolic-ai/eb-langcvae-flan-t5-base-Qwen2.5-3B-srl-l128",
+  "neuro-symbolic-ai/eb-langvae-flan-t5-base-Llama-3.2-3B-l128",
+  "neuro-symbolic-ai/eb-langcvae-flan-t5-base-Llama-3.2-3B-srl-l128",
+  "neuro-symbolic-ai/eb-langvae-flan-t5-base-Mistral-7B-v0.3-l128",
+  "neuro-symbolic-ai/eb-langcvae-flan-t5-base-Mistral-7B-v0.3-srl-l128",
+
+  "neuro-symbolic-ai/eb-langvae-stella_en_1.5B_v5-gpt2-l128",
+  "neuro-symbolic-ai/eb-langcvae-stella_en_1.5B_v5-gpt2-srl-l128",
+  "neuro-symbolic-ai/eb-langvae-stella_en_1.5B_v5-Qwen2.5-3B-l128",
+  "neuro-symbolic-ai/eb-langcvae-stella_en_1.5B_v5-Qwen2.5-3B-srl-l128",
+  "neuro-symbolic-ai/eb-langvae-stella_en_1.5B_v5-Llama-3.2-3B-l128",
+  "neuro-symbolic-ai/eb-langcvae-stella_en_1.5B_v5-Llama-3.2-3B-srl-l128",
+  "neuro-symbolic-ai/eb-langvae-stella_en_1.5B_v5-Mistral-7B-v0.3-l128",
+  "neuro-symbolic-ai/eb-langcvae-stella_en_1.5B_v5-Mistral-7B-v0.3-srl-l128"
+]
